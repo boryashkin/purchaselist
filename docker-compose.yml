@@ -1,0 +1,31 @@
+version: '3.1'
+
+networks:
+  purchaselist-network:
+    external:
+      name: purchaselist-network
+
+services:
+  purchaselist-bot:
+    container_name: "purchaselist-bot"
+    image: golang:1.15beta1-alpine3.12
+    volumes:
+      - .:/go/purchaselist
+    working_dir: /go/purchaselist
+    command: go run bot.go
+    environment:
+      - TGTOKEN=${TGTOKEN}
+    depends_on:
+      - mongo
+    networks:
+      - purchaselist-network
+  mongo:
+    image: mongo:4.1.5-xenial
+    container_name: "purchaselist-mongo"
+    restart: on-failure
+    ports:
+    - 27017:27017
+    volumes:
+      - ./data/mongo:/data/db
+    networks:
+      - purchaselist-network

@@ -1,0 +1,5 @@
+/.idea
+/.env
+/vendor
+/data/mongo
+!/data/mongo/.gitignore
