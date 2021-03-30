@@ -22,7 +22,7 @@ type Dialog struct {
 }
 
 func (c *Dialog) ReadMessage(message *tgbotapi.Message) MessageDto {
-	m := MessageDto{UnknownContent: false}
+	m := MessageDto{UnknownContent: false, ID: message.MessageID, ChatID: message.Chat.ID}
 	if message == nil {
 		return m
 	}

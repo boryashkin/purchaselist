@@ -381,7 +381,9 @@ func reply(chatID int64, messageID int, forReply dialog.MessageForReply) error {
 func createOrUpdateList(m *dialog.MessageDto, session *db.Session) (*db.PurchaseList, error) {
 
 	purchaseList := db.PurchaseList{
-		UpdatedAt: primitive.NewDateTimeFromTime(time.Now()),
+		TgMessageID: m.ID,
+		TgChatID:    m.ChatID,
+		UpdatedAt:   primitive.NewDateTimeFromTime(time.Now()),
 	}
 	if session.PurchaseListId == primitive.NilObjectID {
 		purchaseList.UserID = session.UserId
