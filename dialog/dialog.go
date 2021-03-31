@@ -17,11 +17,11 @@ const (
 	ComFinishedCrossout = "Нoвый списoк"
 )
 
-type Dialog struct {
+type MessageHandler struct {
 	Bot *tgbotapi.BotAPI
 }
 
-func (c *Dialog) ReadMessage(message *tgbotapi.Message) MessageDto {
+func (h *MessageHandler) ReadMessage(message *tgbotapi.Message) MessageDto {
 	m := MessageDto{UnknownContent: false, ID: message.MessageID, ChatID: message.Chat.ID}
 	if message == nil {
 		return m
@@ -43,7 +43,7 @@ func (c *Dialog) ReadMessage(message *tgbotapi.Message) MessageDto {
 		m.Command = ComConfirm
 		m.Text = ""
 	} else if message.Photo != nil && *message.Photo != nil && len(*message.Photo) > 0 {
-		m.PhotoUrls = c.readPhoto(message.Photo)
+		m.PhotoUrls = h.readPhoto(message.Photo)
 	} else if message.Text != "" {
 		m.Text = message.Text
 	} else {
@@ -52,7 +52,7 @@ func (c *Dialog) ReadMessage(message *tgbotapi.Message) MessageDto {
 	return m
 }
 
-func (c *Dialog) GetNewStateByMessage(message *MessageDto, session *db.Session) db.SessState {
+func (h *MessageHandler) GetNewStateByMessage(message *MessageDto, session *db.Session) db.SessState {
 	switch message.Command {
 	case ComStartBot:
 		if session.PostingState == db.SessPStateNew {
@@ -88,7 +88,7 @@ type MessageForReply struct {
 	ReplyKeyboard  *tgbotapi.ReplyKeyboardMarkup
 }
 
-func (c *Dialog) GetMessageForReply(
+func (h *MessageHandler) GetMessageForReply(
 	m *MessageDto, session *db.Session,
 	user *db.User,
 	purchaseList *db.PurchaseList,
@@ -151,10 +151,10 @@ func (c *Dialog) GetMessageForReply(
 	return msg
 }
 
-func (c *Dialog) readPhoto(photo *[]tgbotapi.PhotoSize) []string {
+func (h *MessageHandler) readPhoto(photo *[]tgbotapi.PhotoSize) []string {
 	var urls []string
 	for _, photo := range *photo {
-		url, err := c.Bot.GetFileDirectURL(photo.FileID)
+		url, err := h.Bot.GetFileDirectURL(photo.FileID)
 		if err != nil {
 			log.Println(err)
 		}
@@ -165,6 +165,7 @@ func (c *Dialog) readPhoto(photo *[]tgbotapi.PhotoSize) []string {
 }
 
 func createMessageForPurchaseList(msg MessageForReply, purchaseList *db.PurchaseList) MessageForReply {
+	log.Println("createMessageForPurchaseList")
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	msg.Text = ""
 	for _, key := range purchaseList.Items {

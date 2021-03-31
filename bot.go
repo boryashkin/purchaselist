@@ -43,8 +43,11 @@ var (
 	users         *mongo.Collection
 	sessions      *mongo.Collection
 	purchaseLists *mongo.Collection
-	dbCtx         context.Context
 	bot           *tgbotapi.BotAPI
+
+	userService         db.UserService
+	sessionService      db.SessionService
+	purchaseListService db.PurchaseListService
 )
 
 func generateStdinUpdates(ch chan *MessageEnvelope) {
@@ -141,6 +144,9 @@ func main() {
 	users = client.Database(DbName).Collection(ColUsers)
 	sessions = client.Database(DbName).Collection(ColSessions)
 	purchaseLists = client.Database(DbName).Collection(ColProducts)
+	userService = db.NewUserService(users)
+	sessionService = db.NewSessionService(sessions)
+	purchaseListService = db.NewPurchaseListService(purchaseLists)
 	ch := make(chan *MessageEnvelope)
 	//go generateStdinUpdates(ch)
 	go generateSingleThreadedTgUpdates(ch)
@@ -163,8 +169,6 @@ func main() {
 			go handleAsync(envelope)
 		}
 	}
-
-	log.Printf("After the loop")
 }
 
 func handleAsync(envelope *MessageEnvelope) {
@@ -183,7 +187,7 @@ func handleAsync(envelope *MessageEnvelope) {
 	var msg dialog.MessageForReply
 	update := envelope.Update
 
-	c := dialog.Dialog{Bot: bot}
+	c := dialog.MessageHandler{Bot: bot}
 
 	if update.CallbackQuery != nil {
 		chatID, msgID = getCallbackChatId(envelope)
@@ -262,73 +266,33 @@ func getOrRegisterUser(message *tgbotapi.Message) (*db.User, error) {
 		Phone: phone,
 		Lang:  message.From.LanguageCode,
 	}
-	err := users.FindOne(context.Background(), bson.M{
-		"tg_id": user.TgId,
-	}).Decode(&user)
+	err := userService.Upsert(&user)
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			res, err := users.InsertOne(dbCtx, user)
-			if err != nil {
-				log.Println("Failed to insert a user", err)
-				return nil, errors.New("failed to save a user")
-			}
-			if oid, ok := res.InsertedID.(primitive.ObjectID); ok {
-				user.Id = oid
-			} else {
-				log.Println("Failed to extract ObjectId")
-				return nil, errors.New("failed to extract id")
-			}
-		} else {
-			log.Println("Find user err", err)
-			return nil, errors.New("failed to find a user")
-		}
+		user, err = userService.FindByTgID(message.From.ID)
 	}
 
-	return &user, nil
+	return &user, err
 }
 func getOrCreateSession(user *db.User) (*db.Session, error) {
-
 	session := db.Session{
 		UserId:         user.Id,
 		PostingState:   db.SessPStateNew,
 		PurchaseListId: primitive.NilObjectID,
 	}
-	err := sessions.FindOne(context.Background(), bson.M{
-		"user_id": session.UserId,
-	}).Decode(&session)
+	log.Println("getOrCreateSession", session)
+	err := sessionService.Create(&session)
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			res, err := sessions.InsertOne(dbCtx, session)
-			if err != nil {
-				log.Println("Failed to insert a session", err)
-				return nil, errors.New("failed to save a session")
-			}
-			if oid, ok := res.InsertedID.(primitive.ObjectID); ok {
-				session.Id = oid
-			} else {
-				log.Println("Failed to extract sess ObjectId")
-				return nil, errors.New("failed to extract sess id")
-			}
-		} else {
-			log.Println("Find session err", err)
-			return nil, errors.New("failed to find a session")
+		log.Println("failed to create session", err)
+		session, err = sessionService.FindByUserID(user.Id)
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	return &session, nil
+	return &session, err
 }
 func updateSession(session *db.Session) error {
-	_, err := sessions.UpdateOne(dbCtx, bson.M{"_id": session.Id}, bson.M{
-		"$set": bson.M{
-			"posting_state":    session.PostingState,
-			"previous_state":   session.PreviousState,
-			"purchase_list_id": session.PurchaseListId,
-		},
-	})
-	if err != nil {
-		return errors.New("failed to update a session")
-	}
-	return nil
+	return sessionService.UpdateSession(session)
 }
 func reply(chatID int64, messageID int, forReply dialog.MessageForReply) error {
 	if bot == nil {
@@ -379,39 +343,33 @@ func reply(chatID int64, messageID int, forReply dialog.MessageForReply) error {
 	return nil
 }
 func createOrUpdateList(m *dialog.MessageDto, session *db.Session) (*db.PurchaseList, error) {
-
-	purchaseList := db.PurchaseList{
-		TgMessageID: m.ID,
-		TgChatID:    m.ChatID,
-		UpdatedAt:   primitive.NewDateTimeFromTime(time.Now()),
-	}
+	var purchaseList db.PurchaseList
+	var err error
 	if session.PurchaseListId == primitive.NilObjectID {
+		purchaseList = db.PurchaseList{
+			UserID:      session.UserId,
+			TgMessageID: m.ID,
+			TgChatID:    m.ChatID,
+			UpdatedAt:   primitive.NewDateTimeFromTime(time.Now()),
+		}
 		purchaseList.UserID = session.UserId
 		purchaseList.CreatedAt = primitive.NewDateTimeFromTime(time.Now())
-		res, err := purchaseLists.InsertOne(dbCtx, purchaseList)
+		err = purchaseListService.Create(&purchaseList)
 		if err != nil {
 			log.Println("Failed to insert a purchaseList", err)
 			return nil, errors.New("failed to save a purchaseList")
 		}
-		if oid, ok := res.InsertedID.(primitive.ObjectID); ok {
-			purchaseList.Id = oid
-		} else {
-			return nil, errors.New("failed to extract pro id")
-		}
+		session.PurchaseListId = purchaseList.Id
 	} else {
-		err := purchaseLists.FindOne(context.Background(), bson.M{
-			"_id": session.PurchaseListId,
-		}).Decode(&purchaseList)
+		purchaseList, err = purchaseListService.FindByID(session.PurchaseListId)
 		if err != nil {
-			return nil, errors.New("failed to find a purchaseList")
+			return nil, err
 		}
 	}
 	switch session.PostingState {
 	case db.SessPStateCreation:
-		log.Println("sanitizedList", m.Text)
 		textItems := createListFromText(m.Text)
 		textItems = sanitizeList(textItems)
-		log.Println("sanitizedList", textItems)
 		items := purchaseList.Items
 		for _, textItem := range textItems {
 			items = append(items, db.PurchaseItem{
@@ -426,15 +384,21 @@ func createOrUpdateList(m *dialog.MessageDto, session *db.Session) (*db.Purchase
 		break
 	}
 
-	_, err := purchaseLists.UpdateOne(dbCtx, bson.M{"_id": purchaseList.Id}, bson.M{
-		"$set": bson.M{
+	err = purchaseListService.UpdateFields(
+		session.PurchaseListId,
+		bson.M{
 			"purchase_items": purchaseList.Items,
 			"created_at":     purchaseList.CreatedAt,
 			"updated_at":     purchaseList.UpdatedAt,
 		},
-	})
+	)
 	if err != nil {
-		return nil, errors.New("failed to save a purchaseList")
+		return nil, err
+	}
+
+	purchaseList, err = purchaseListService.FindByID(purchaseList.Id)
+	if err != nil {
+		return nil, errors.New("failed to find a purchaseList " + err.Error())
 	}
 	return &purchaseList, nil
 }
@@ -465,41 +429,7 @@ func createFakeUpdate(envelope *MessageEnvelope) {
 }
 
 func crossOutItemFromPurchaseList(id primitive.ObjectID, itemHash string) (*db.PurchaseList, error) {
-	/*
-		db.getCollection('purchaseLists').update(
-		    {"_id" : ObjectId("605f9d11cfd0e8a0ad111a7d")},
-		    {$set: {"purchase_items.$[elem].state": 1}},
-		    {
-		        multi: false,
-		        arrayFilters: [{"elem.name": "dk"}]
-		    }
-		)
-	*/
-	filters := []interface{}{
-		bson.M{"elem.hash": itemHash},
-	}
-	arrFilter := options.ArrayFilters{
-		bson.DefaultRegistry,
-		filters,
-	}
-	updOpts := options.UpdateOptions{
-		ArrayFilters: &arrFilter,
-	}
-	_, err := purchaseLists.UpdateOne(
-		context.Background(),
-		bson.M{"_id": id},
-		bson.M{"$set": bson.M{"purchase_items.$[elem].state": db.PiStateBought}},
-		&updOpts,
-	)
-	purchaseList := db.PurchaseList{}
-	err = purchaseLists.FindOne(context.Background(), bson.M{
-		"_id": id,
-	}).Decode(&purchaseList)
-	if err != nil {
-		return nil, errors.New("failed to find a purchaseList")
-	}
-
-	return &purchaseList, err
+	return purchaseListService.CrossOutItemFromPurchaseList(id, itemHash)
 }
 
 func getMessageChatId(envelope *MessageEnvelope) (int64, int) {
@@ -514,7 +444,7 @@ func GetMD5Hash(text string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func readCallbackQuery(query *tgbotapi.CallbackQuery, c *dialog.Dialog) dialog.MessageForReply {
+func readCallbackQuery(query *tgbotapi.CallbackQuery, c *dialog.MessageHandler) dialog.MessageForReply {
 	cbQueryData := query.Data
 	m := dialog.MessageDto{UnknownContent: true}
 	log.Println("query data", cbQueryData)
@@ -612,11 +542,11 @@ func getUniqueItemsFromListBoundedToMax(list []string) []string {
 func changeStateToNewListCreation(listID primitive.ObjectID) (*db.PurchaseList, *db.Session, *db.User, error) {
 	var pList db.PurchaseList
 	var user db.User
-	err := purchaseLists.FindOne(context.Background(), bson.M{"_id": listID}).Decode(&pList)
+	pList, err := purchaseListService.FindByID(listID)
 	if err != nil {
 		return nil, nil, nil, errors.New("failed to find a purchaseList" + listID.Hex())
 	}
-	err = users.FindOne(context.Background(), bson.M{"_id": pList.UserID}).Decode(&user)
+	user, err = userService.FindByID(pList.UserID)
 	if err != nil {
 		return nil, nil, nil, errors.New("failed to find a user")
 	}
