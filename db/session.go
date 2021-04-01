@@ -51,7 +51,7 @@ func (s *SessionService) FindByUserID(id primitive.ObjectID) (Session, error) {
 }
 
 func (s *SessionService) Create(session *Session) error {
-	log.Println("session.Create", session)
+	log.Println("session.Create")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

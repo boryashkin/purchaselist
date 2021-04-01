@@ -3,6 +3,7 @@ package dialog
 import (
 	"github.com/boryashkin/purchaselist/db"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"log"
 	"strings"
 )
@@ -52,24 +53,39 @@ func (h *MessageHandler) ReadMessage(message *tgbotapi.Message) MessageDto {
 	return m
 }
 
-func (h *MessageHandler) GetNewStateByMessage(message *MessageDto, session *db.Session) db.SessState {
-	switch message.Command {
+func (h *MessageHandler) GetNewStateByMessage(message *MessageDto, dState *DialogState) *DialogState {
+	currState := dState.Session.PostingState
+	prevState := dState.Session.PreviousState
+	newSessState := h.getNewSessionStateByCommand(message.Command, currState)
+
+	if newSessState != currState {
+		if currState == db.SessPStateCreation && prevState == db.SessPStateDone {
+			dState.Session.PurchaseListId = primitive.NilObjectID
+		}
+		dState.Session.PreviousState = currState
+		dState.Session.PostingState = newSessState
+	}
+	return dState
+}
+
+func (h *MessageHandler) getNewSessionStateByCommand(command string, currState db.SessState) db.SessState {
+	switch command {
 	case ComStartBot:
-		if session.PostingState == db.SessPStateNew {
+		if currState == db.SessPStateNew {
 			return db.SessPStateCreation
 		}
 		break
 	case ComConfirm:
-		if session.PostingState == db.SessPStateCreation {
+		if currState == db.SessPStateCreation {
 			return db.SessPStateDone
-		} else if session.PostingState == db.SessPStateDone {
+		} else if currState == db.SessPStateDone {
 			return db.SessPStateCreation
-		} else if session.PostingState == db.SessPStateNew {
+		} else if currState == db.SessPStateNew {
 			return db.SessPStateCreation
 		}
 		break
 	case ComCreatePost:
-		if session.PostingState == db.SessPStateNew || session.PostingState == db.SessPStateRegistered {
+		if currState == db.SessPStateNew || currState == db.SessPStateRegistered {
 			return db.SessPStateCreation
 		}
 	case ComCancel:
@@ -77,7 +93,7 @@ func (h *MessageHandler) GetNewStateByMessage(message *MessageDto, session *db.S
 
 	}
 
-	return session.PostingState
+	return currState
 }
 
 type MessageForReply struct {
@@ -89,9 +105,8 @@ type MessageForReply struct {
 }
 
 func (h *MessageHandler) GetMessageForReply(
-	m *MessageDto, session *db.Session,
-	user *db.User,
-	purchaseList *db.PurchaseList,
+	m *MessageDto,
+	session *db.Session, user *db.User, purchaseList *db.PurchaseList,
 ) MessageForReply {
 	msg := MessageForReply{NewMessage: true}
 	if session == nil {

@@ -180,11 +180,9 @@ func handleAsync(envelope *MessageEnvelope) {
 	}
 	var m dialog.MessageDto
 	var message *tgbotapi.Message
-	var session *db.Session
-	var user *db.User
-	var purchaseList *db.PurchaseList
 	var err error
 	var msg dialog.MessageForReply
+	var dState *dialog.DialogState
 	update := envelope.Update
 
 	c := dialog.MessageHandler{Bot: bot}
@@ -196,31 +194,14 @@ func handleAsync(envelope *MessageEnvelope) {
 		return
 	} else if update.Message != nil {
 		message = update.Message
+		chatID, msgID = getMessageChatId(envelope)
 		log.Printf("[%d] %s", message.From.ID, message.Text)
-		m = c.ReadMessage(message)
-		user, err = getOrRegisterUser(message)
-		if err != nil {
-			chatID, msgID = getMessageChatId(envelope)
-			reply(chatID, msgID, dialog.MessageForReply{Text: err.Error()})
-			return
-		}
-		session, err = getOrCreateSession(user)
-		if err != nil {
-			chatID, msgID = getMessageChatId(envelope)
-			reply(chatID, msgID, dialog.MessageForReply{Text: err.Error()})
-			return
-		}
 
-		purchaseList, err = createOrUpdateList(&m, session)
+		m = c.ReadMessage(message)
+		dState, err = createDialogStateFromMessage(&m, message)
 		if err != nil {
-			chatID, msgID = getMessageChatId(envelope)
 			reply(chatID, msgID, dialog.MessageForReply{Text: err.Error()})
-		} else if purchaseList != nil {
-			session.PurchaseListId = purchaseList.Id
-		}
-		if session.PostingState == db.SessPStateDone && purchaseList == nil && m.Command == dialog.ComConfirm {
-			chatID, msgID = getMessageChatId(envelope)
-			reply(chatID, msgID, dialog.MessageForReply{Text: "failed to save a purchaseList, try again"})
+			return
 		}
 
 	} else {
@@ -228,31 +209,38 @@ func handleAsync(envelope *MessageEnvelope) {
 		return
 	}
 
-	st := c.GetNewStateByMessage(&m, session)
-	if st != session.PostingState {
-		if session.PostingState == db.SessPStateCreation && session.PreviousState == db.SessPStateDone {
-			session.PurchaseListId = primitive.NilObjectID
-		}
-		session.PreviousState = session.PostingState
-		session.PostingState = st
-		err = updateSession(session)
-		if err != nil {
-			chatID, msgID = getMessageChatId(envelope)
-			reply(chatID, msgID, dialog.MessageForReply{Text: err.Error()})
-			return
-		}
-	} else if purchaseList != nil {
-		err = updateSession(session)
-		if err != nil {
-			chatID, msgID = getMessageChatId(envelope)
-			reply(chatID, msgID, dialog.MessageForReply{Text: err.Error()})
-			return
-		}
+	st := c.GetNewStateByMessage(&m, dState)
+	err = updateSession(st.Session)
+	if err != nil {
+		reply(chatID, msgID, dialog.MessageForReply{Text: err.Error()})
+		return
 	}
-	msg = c.GetMessageForReply(&m, session, user, purchaseList)
+	msg = c.GetMessageForReply(&m, dState.Session, dState.User, dState.PurchaseList)
 
-	chatID, msgID = getMessageChatId(envelope)
 	reply(chatID, msgID, msg)
+}
+
+func createDialogStateFromMessage(m *dialog.MessageDto, message *tgbotapi.Message) (*dialog.DialogState, error) {
+	user, err := getOrRegisterUser(message)
+	if err != nil {
+		return nil, err
+	}
+	session, err := getOrCreateSession(user)
+	if err != nil {
+		return nil, err
+	}
+
+	purchaseList, err := createOrUpdateList(m, session)
+	if err != nil {
+		return nil, err
+	}
+	session.PurchaseListId = purchaseList.Id
+	dState := dialog.DialogState{
+		User:         user,
+		Session:      session,
+		PurchaseList: purchaseList,
+	}
+	return &dState, nil
 }
 
 func getOrRegisterUser(message *tgbotapi.Message) (*db.User, error) {
@@ -279,7 +267,7 @@ func getOrCreateSession(user *db.User) (*db.Session, error) {
 		PostingState:   db.SessPStateNew,
 		PurchaseListId: primitive.NilObjectID,
 	}
-	log.Println("getOrCreateSession", session)
+	log.Println("getOrCreateSession")
 	err := sessionService.Create(&session)
 	if err != nil {
 		log.Println("failed to create session", err)
