@@ -88,7 +88,7 @@ func (s *SessionService) Create(session *Session) error {
 }
 
 func (s *SessionService) UpdateSession(session *Session) error {
-	log.Println("session.UpdateSession")
+	log.Println("session.UpdateSession", session.PreviousState, session.PostingState, session.PurchaseListId)
 	_, err := s.collection.UpdateOne(context.Background(), bson.M{"_id": session.Id}, bson.M{
 		"$set": bson.M{
 			"posting_state":    session.PostingState,

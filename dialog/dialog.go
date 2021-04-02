@@ -3,7 +3,6 @@ package dialog
 import (
 	"github.com/boryashkin/purchaselist/db"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"log"
 	"strings"
 )
@@ -57,14 +56,16 @@ func (h *MessageHandler) GetNewStateByMessage(message *MessageDto, dState *Dialo
 	currState := dState.Session.PostingState
 	prevState := dState.Session.PreviousState
 	newSessState := h.getNewSessionStateByCommand(message.Command, currState)
+	log.Println("[STATES] ", prevState, currState, newSessState)
 
-	if newSessState != currState {
-		if currState == db.SessPStateCreation && prevState == db.SessPStateDone {
-			dState.Session.PurchaseListId = primitive.NilObjectID
+	if newSessState == currState {
+		if currState == db.SessPStateDone {
+			newSessState = db.SessPStateCreation
 		}
-		dState.Session.PreviousState = currState
-		dState.Session.PostingState = newSessState
 	}
+	dState.Session.PreviousState = currState
+	dState.Session.PostingState = newSessState
+
 	return dState
 }
 
@@ -77,7 +78,7 @@ func (h *MessageHandler) getNewSessionStateByCommand(command string, currState d
 		break
 	case ComConfirm:
 		if currState == db.SessPStateCreation {
-			return db.SessPStateDone
+			return db.SessPStateCreation
 		} else if currState == db.SessPStateDone {
 			return db.SessPStateCreation
 		} else if currState == db.SessPStateNew {
@@ -98,24 +99,27 @@ func (h *MessageHandler) getNewSessionStateByCommand(command string, currState d
 
 type MessageForReply struct {
 	NewMessage     bool
+	DeletePrevious *bool
 	Text           string
 	InlineKeyboard *tgbotapi.InlineKeyboardMarkup
 	AnswerCallback *tgbotapi.CallbackConfig
 	ReplyKeyboard  *tgbotapi.ReplyKeyboardMarkup
+	Markdown       *string
 }
 
 func (h *MessageHandler) GetMessageForReply(
 	m *MessageDto,
 	session *db.Session, user *db.User, purchaseList *db.PurchaseList,
 ) MessageForReply {
-	msg := MessageForReply{NewMessage: true}
+	defaultMkdwn := tgbotapi.ModeMarkdown + "V2"
+	msg := MessageForReply{NewMessage: true, Markdown: &defaultMkdwn}
 	if session == nil {
 		msg.NewMessage = false
 		msg = createMessageForPurchaseList(msg, purchaseList)
 		return msg
 	}
 	switch session.PostingState {
-	case db.SessPStateRegistered:
+	case db.SessPStateRegistered, db.SessPStateNew:
 		msg.Text = "Приветствуем, " + user.Name + "! \n" +
 			" Чтобы составить список, записывайте товары сюда\n" +
 			" - Отдельными сообщениями\n" +
@@ -123,16 +127,20 @@ func (h *MessageHandler) GetMessageForReply(
 			" - Пересылайте сообщения из других чатов\n"
 		break
 	case db.SessPStateCreation:
-		if m.Text == "" {
-			msg.Text = "Введите название товара или список"
-			bb := []tgbotapi.KeyboardButton{
-				tgbotapi.NewKeyboardButton(ComDone),
-			}
-			kb := tgbotapi.NewReplyKeyboard(bb)
-			msg.ReplyKeyboard = &kb
+		if m.Command != "" && session.PreviousState == db.SessPStateNew {
+			msg.Markdown = nil
+			msg.Text = "Приветствую! \n" +
+				"Чтобы составить список, записывайте товары сюда\n" +
+				" - Отдельными сообщениями\n" +
+				" - Одним сообщением, каждый товар с новой строки\n" +
+				" - Пересылайте сообщения из других чатов\n\n\n" +
+				"Введите название товара или список"
 		} else {
-			msg.Text = ""
+			dmsg := len(purchaseList.Items) > 0
+			msg.DeletePrevious = &dmsg
+			msg = createMessageForPurchaseList(msg, purchaseList)
 		}
+
 		break
 	case db.SessPStateInProgress:
 		if m.Text == "" {
@@ -143,6 +151,7 @@ func (h *MessageHandler) GetMessageForReply(
 		break
 	case db.SessPStateDone:
 		if m.Text == "" {
+			log.Println("[GMFR] 3")
 			msg = createMessageForPurchaseList(msg, purchaseList)
 		}
 		break
@@ -197,7 +206,6 @@ func createMessageForPurchaseList(msg MessageForReply, purchaseList *db.Purchase
 		}
 		msg.Text += stylePre + key.Name + stylePost + "\n"
 	}
-	log.Println("[kb] ROWS len", len(rows))
 	if len(rows) > 0 {
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 		msg.InlineKeyboard = &keyboard

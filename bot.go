@@ -209,6 +209,8 @@ func handleAsync(envelope *MessageEnvelope) {
 		return
 	}
 
+	prevChatID := dState.PurchaseList.TgChatID
+	prevMsgID := dState.PurchaseList.TgMessageID
 	st := c.GetNewStateByMessage(&m, dState)
 	err = updateSession(st.Session)
 	if err != nil {
@@ -216,8 +218,15 @@ func handleAsync(envelope *MessageEnvelope) {
 		return
 	}
 	msg = c.GetMessageForReply(&m, dState.Session, dState.User, dState.PurchaseList)
-
-	reply(chatID, msgID, msg)
+	if msg.DeletePrevious != nil && *msg.DeletePrevious == true {
+		deleteMessage(prevChatID, prevMsgID)
+	}
+	sent, err := reply(chatID, msgID, msg)
+	if err == nil {
+		dState.PurchaseList.TgChatID = sent.Chat.ID
+		dState.PurchaseList.TgMessageID = sent.MessageID
+		purchaseListService.UpdateFields(dState.PurchaseList.Id, bson.M{"tg_chat_id": sent.Chat.ID, "tg_message_id": sent.MessageID})
+	}
 }
 
 func createDialogStateFromMessage(m *dialog.MessageDto, message *tgbotapi.Message) (*dialog.DialogState, error) {
@@ -282,53 +291,53 @@ func getOrCreateSession(user *db.User) (*db.Session, error) {
 func updateSession(session *db.Session) error {
 	return sessionService.UpdateSession(session)
 }
-func reply(chatID int64, messageID int, forReply dialog.MessageForReply) error {
+func reply(chatID int64, messageID int, forReply dialog.MessageForReply) (*tgbotapi.Message, error) {
 	if bot == nil {
 		log.Println("[No bot] ", forReply.Text)
-		return nil
-	} else {
-		var msg tgbotapi.Chattable
-		if forReply.NewMessage {
-			log.Println("NewMessage", forReply.Text)
-			if forReply.Text == "" {
-				log.Println("not sent")
-				return nil
-			}
-			msgNew := tgbotapi.NewMessage(chatID, forReply.Text)
-			msgNew.ReplyToMessageID = messageID
-			msgNew.ParseMode = tgbotapi.ModeMarkdown + "V2"
-			if forReply.InlineKeyboard != nil {
-				msgNew.ReplyMarkup = forReply.InlineKeyboard
-			}
-			if forReply.ReplyKeyboard != nil {
-				msgNew.ReplyMarkup = forReply.ReplyKeyboard
-			}
-			msg = msgNew
-		} else {
-			log.Println("EditMessage")
-			msgEdit := tgbotapi.NewEditMessageText(chatID, messageID, forReply.Text)
-			msgEdit.ParseMode = tgbotapi.ModeMarkdown + "V2"
-			if forReply.InlineKeyboard != nil {
-				msgEdit.ReplyMarkup = forReply.InlineKeyboard
-			}
-			msg = msgEdit
-		}
-		if forReply.AnswerCallback != nil {
-			_, err := bot.AnswerCallbackQuery(*forReply.AnswerCallback)
-			if err != nil {
-				log.Println("err while answering CallbackQuery " + err.Error())
-			}
-		}
-
-		_, err := bot.Send(msg)
-		if err != nil {
-			log.Println("err while sending " + err.Error())
-		} else {
-			log.Println("bot.Send() ok")
-		}
-		return err
+		return nil, errors.New("No bot")
 	}
-	return nil
+
+	var msg tgbotapi.Chattable
+	if forReply.NewMessage {
+		if forReply.Text == "" {
+			log.Println("not sent")
+			return nil, errors.New("Not sent")
+		}
+		msgNew := tgbotapi.NewMessage(chatID, forReply.Text)
+		//msgNew.ReplyToMessageID = messageID
+		if forReply.Markdown != nil {
+			msgNew.ParseMode = *forReply.Markdown
+		}
+		if forReply.InlineKeyboard != nil {
+			msgNew.ReplyMarkup = forReply.InlineKeyboard
+		}
+		if forReply.ReplyKeyboard != nil {
+			msgNew.ReplyMarkup = forReply.ReplyKeyboard
+		}
+		msg = msgNew
+	} else {
+		log.Println("EditMessage")
+		msgEdit := tgbotapi.NewEditMessageText(chatID, messageID, forReply.Text)
+		msgEdit.ParseMode = tgbotapi.ModeMarkdown + "V2"
+		if forReply.InlineKeyboard != nil {
+			msgEdit.ReplyMarkup = forReply.InlineKeyboard
+		}
+		msg = msgEdit
+	}
+	if forReply.AnswerCallback != nil {
+		_, err := bot.AnswerCallbackQuery(*forReply.AnswerCallback)
+		if err != nil {
+			log.Println("err while answering CallbackQuery " + err.Error())
+		}
+	}
+
+	sent, err := bot.Send(msg)
+	if err != nil {
+		log.Println("err while sending " + err.Error())
+	} else {
+		log.Println("bot.Send() ok")
+	}
+	return &sent, err
 }
 func createOrUpdateList(m *dialog.MessageDto, session *db.Session) (*db.PurchaseList, error) {
 	var purchaseList db.PurchaseList
@@ -355,15 +364,25 @@ func createOrUpdateList(m *dialog.MessageDto, session *db.Session) (*db.Purchase
 		}
 	}
 	switch session.PostingState {
-	case db.SessPStateCreation:
-		textItems := createListFromText(m.Text)
+	case db.SessPStateCreation, db.SessPStateDone:
+		textItems := []string{}
+		oldStates := map[string]db.PurchaseItemState{}
+		for _, item := range purchaseList.Items {
+			textItems = append(textItems, item.Name)
+			oldStates[item.Name] = item.State
+		}
+		textItems = append(textItems, createListFromText(m.Text)...)
 		textItems = sanitizeList(textItems)
-		items := purchaseList.Items
+		items := []db.PurchaseItem{}
 		for _, textItem := range textItems {
+			state := db.PiStatePlanned
+			if _, found := oldStates[textItem]; found {
+				state = oldStates[textItem]
+			}
 			items = append(items, db.PurchaseItem{
 				Name:      textItem,
 				Hash:      GetMD5Hash(textItem),
-				State:     db.PiStatePlanned,
+				State:     state,
 				CreatedAt: primitive.NewDateTimeFromTime(time.Now()),
 			})
 		}
@@ -453,15 +472,16 @@ func readCallbackQuery(query *tgbotapi.CallbackQuery, c *dialog.MessageHandler) 
 	log.Println("listID", listID, "text", itemHash)
 	cbAnswer := tgbotapi.CallbackConfig{CallbackQueryID: query.ID, Text: ""}
 	if itemHash == dialog.ComFinishedCrossout {
-		_, session, _, err := changeStateToNewListCreation(listID)
+		_, session, _, err := getStateByList(listID)
 		if err != nil {
 			cbAnswer.Text = "Ошибка"
 			log.Println(err)
 			return dialog.MessageForReply{NewMessage: false, Text: "", AnswerCallback: &cbAnswer}
 		}
-		msg := dialog.MessageForReply{NewMessage: false, Text: "Введите название товара или список", AnswerCallback: &cbAnswer}
+		msg := dialog.MessageForReply{NewMessage: true, Text: "Введите название товара или список", AnswerCallback: &cbAnswer}
 		session.PreviousState = session.PostingState
-		session.PostingState = db.SessPStateCreation
+		session.PostingState = db.SessPStateDone
+		session.PurchaseListId = primitive.NilObjectID
 		err = updateSession(session)
 		if err != nil {
 			cbAnswer.Text = "Ошибка обновления сессии"
@@ -469,7 +489,7 @@ func readCallbackQuery(query *tgbotapi.CallbackQuery, c *dialog.MessageHandler) 
 			return dialog.MessageForReply{NewMessage: false, Text: "", AnswerCallback: &cbAnswer}
 		}
 		return msg
-	} else {
+	} else { //element is crossed out
 		purchaseList, err := crossOutItemFromPurchaseList(listID, itemHash)
 		if err != nil {
 			cbAnswer.Text = "Ошибка"
@@ -492,13 +512,9 @@ func createListFromText(text string) []string {
 func sanitizeList(list []string) []string {
 	var result []string
 	for _, text := range list {
-		log.Println("[sanitize] before", text)
 		text = stripmd.Strip(text)
-		log.Println("[sanitize] a1", text)
 		text = strings.ReplaceAll(text, ".", " ")
-		log.Println("[sanitize] a2", text)
 		text = strings.Trim(text, "`~\n\t")
-		log.Println("[sanitize] a3", text)
 		if text == "" {
 			continue
 		}
@@ -527,7 +543,7 @@ func getUniqueItemsFromListBoundedToMax(list []string) []string {
 	return result
 }
 
-func changeStateToNewListCreation(listID primitive.ObjectID) (*db.PurchaseList, *db.Session, *db.User, error) {
+func getStateByList(listID primitive.ObjectID) (*db.PurchaseList, *db.Session, *db.User, error) {
 	var pList db.PurchaseList
 	var user db.User
 	pList, err := purchaseListService.FindByID(listID)
@@ -544,4 +560,15 @@ func changeStateToNewListCreation(listID primitive.ObjectID) (*db.PurchaseList, 
 	}
 
 	return &pList, session, &user, err
+}
+
+func deleteMessage(chatID int64, msgID int) error {
+	if bot == nil {
+		log.Println("[No bot] ")
+		return errors.New("No bot")
+	}
+	log.Println("[message] DELETE")
+
+	_, err := bot.DeleteMessage(tgbotapi.NewDeleteMessage(chatID, msgID))
+	return err
 }
