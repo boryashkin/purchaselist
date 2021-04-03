@@ -11,7 +11,6 @@ import (
 	"github.com/boryashkin/purchaselist/dialog"
 	"github.com/go-telegram-bot-api/telegram-bot-api"
 	"github.com/writeas/go-strip-markdown"
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -48,6 +47,7 @@ var (
 	userService         db.UserService
 	sessionService      db.SessionService
 	purchaseListService db.PurchaseListService
+	testMemoryMap       map[string][]string
 )
 
 func generateStdinUpdates(ch chan *MessageEnvelope) {
@@ -147,28 +147,31 @@ func main() {
 	userService = db.NewUserService(users)
 	sessionService = db.NewSessionService(sessions)
 	purchaseListService = db.NewPurchaseListService(purchaseLists)
-	ch := make(chan *MessageEnvelope)
-	//go generateStdinUpdates(ch)
-	go generateSingleThreadedTgUpdates(ch)
-	//updates := generateTgUpdates()
-	//for update := range *updates {
-	//	update := update // trying to make a local copy to prevent races
-	//	envelope := MessageEnvelope{}
-	//	if update.Message != nil {
-	//		envelope.Text = update.Message.Text
-	//	} else {
-	//		envelope.Text = ""
-	//	}
-	//	envelope.Update = &update
-	//	go handleAsync(&envelope)
-	//}
-
-	for {
-		select {
-		case envelope := <-ch:
-			go handleAsync(envelope)
-		}
+	testMemoryMap = map[string][]string{
+		"": {""},
 	}
+	//ch := make(chan *MessageEnvelope)
+	//go generateStdinUpdates(ch)
+	//go generateSingleThreadedTgUpdates(ch)//side effect: duplicate messages on race conditions
+	updates := generateTgUpdates()
+	for update := range *updates {
+		update := update // trying to make a local copy to prevent races
+		envelope := MessageEnvelope{}
+		if update.Message != nil {
+			envelope.Text = update.Message.Text
+		} else {
+			envelope.Text = ""
+		}
+		envelope.Update = &update
+		go handleAsync(&envelope)
+	}
+
+	//for {
+	//	select {
+	//	case envelope := <-ch:
+	//		go handleAsync(envelope)
+	//	}
+	//}
 }
 
 func handleAsync(envelope *MessageEnvelope) {
@@ -185,7 +188,7 @@ func handleAsync(envelope *MessageEnvelope) {
 	var dState *dialog.DialogState
 	update := envelope.Update
 
-	c := dialog.MessageHandler{Bot: bot}
+	c := dialog.NewMessageHandler(bot, &purchaseListService)
 
 	if update.CallbackQuery != nil {
 		chatID, msgID = getCallbackChatId(envelope)
@@ -195,7 +198,7 @@ func handleAsync(envelope *MessageEnvelope) {
 	} else if update.Message != nil {
 		message = update.Message
 		chatID, msgID = getMessageChatId(envelope)
-		log.Printf("[%d] %s", message.From.ID, message.Text)
+		log.Printf("[RECEIVED][%d] %s", message.From.ID, message.Text)
 
 		m = c.ReadMessage(message)
 		dState, err = createDialogStateFromMessage(&m, message)
@@ -209,8 +212,7 @@ func handleAsync(envelope *MessageEnvelope) {
 		return
 	}
 
-	prevChatID := dState.PurchaseList.TgChatID
-	prevMsgID := dState.PurchaseList.TgMessageID
+	prevMsgID := dState.PurchaseList.TgMsgID
 	st := c.GetNewStateByMessage(&m, dState)
 	err = updateSession(st.Session)
 	if err != nil {
@@ -219,13 +221,15 @@ func handleAsync(envelope *MessageEnvelope) {
 	}
 	msg = c.GetMessageForReply(&m, dState.Session, dState.User, dState.PurchaseList)
 	if msg.DeletePrevious != nil && *msg.DeletePrevious == true {
-		deleteMessage(prevChatID, prevMsgID)
+		deleteMessage(dState.Session.PurchaseListId, prevMsgID)
 	}
 	sent, err := reply(chatID, msgID, msg)
 	if err == nil {
-		dState.PurchaseList.TgChatID = sent.Chat.ID
-		dState.PurchaseList.TgMessageID = sent.MessageID
-		purchaseListService.UpdateFields(dState.PurchaseList.Id, bson.M{"tg_chat_id": sent.Chat.ID, "tg_message_id": sent.MessageID})
+		msgID := db.TgMsgID{
+			TgChatID:    sent.Chat.ID,
+			TgMessageID: sent.MessageID,
+		}
+		purchaseListService.AddMsgID(dState.PurchaseList.Id, msgID)
 	}
 }
 
@@ -334,23 +338,35 @@ func reply(chatID int64, messageID int, forReply dialog.MessageForReply) (*tgbot
 	sent, err := bot.Send(msg)
 	if err != nil {
 		log.Println("err while sending " + err.Error())
+		msgNew := tgbotapi.NewMessage(chatID, "Произошла ошибка при отправке")
+		_, _ = bot.Send(msgNew)
 	} else {
 		log.Println("bot.Send() ok")
 	}
 	return &sent, err
 }
+func createEmptyList(session *db.Session) (*db.PurchaseList, error) {
+	return purchaseListService.CreateEmptyList(session.UserId)
+}
+
 func createOrUpdateList(m *dialog.MessageDto, session *db.Session) (*db.PurchaseList, error) {
 	var purchaseList db.PurchaseList
 	var err error
 	if session.PurchaseListId == primitive.NilObjectID {
 		purchaseList = db.PurchaseList{
-			UserID:      session.UserId,
-			TgMessageID: m.ID,
-			TgChatID:    m.ChatID,
-			UpdatedAt:   primitive.NewDateTimeFromTime(time.Now()),
+			UserID: session.UserId,
+			TgMsgID: []db.TgMsgID{
+				{
+					TgMessageID: m.ID,
+					TgChatID:    m.ChatID,
+				},
+			},
+			UpdatedAt: primitive.NewDateTimeFromTime(time.Now()),
 		}
 		purchaseList.UserID = session.UserId
 		purchaseList.CreatedAt = primitive.NewDateTimeFromTime(time.Now())
+		purchaseList.Items = []db.PurchaseItem{}
+		purchaseList.DeletedItems = []db.PurchaseItem{}
 		err = purchaseListService.Create(&purchaseList)
 		if err != nil {
 			log.Println("Failed to insert a purchaseList", err)
@@ -366,39 +382,16 @@ func createOrUpdateList(m *dialog.MessageDto, session *db.Session) (*db.Purchase
 	switch session.PostingState {
 	case db.SessPStateCreation, db.SessPStateDone:
 		textItems := []string{}
-		oldStates := map[string]db.PurchaseItemState{}
-		for _, item := range purchaseList.Items {
-			textItems = append(textItems, item.Name)
-			oldStates[item.Name] = item.State
-		}
 		textItems = append(textItems, createListFromText(m.Text)...)
 		textItems = sanitizeList(textItems)
-		items := []db.PurchaseItem{}
 		for _, textItem := range textItems {
-			state := db.PiStatePlanned
-			if _, found := oldStates[textItem]; found {
-				state = oldStates[textItem]
+			err = purchaseListService.AddItemToPurchaseList(purchaseList.Id, textItem)
+			if err != nil {
+				err = purchaseListService.AddItemToPurchaseList(purchaseList.Id, textItem)
+				log.Println("Failed to add an item", err)
 			}
-			items = append(items, db.PurchaseItem{
-				Name:      textItem,
-				Hash:      GetMD5Hash(textItem),
-				State:     state,
-				CreatedAt: primitive.NewDateTimeFromTime(time.Now()),
-			})
 		}
-		purchaseList.Items = items
-
-		break
 	}
-
-	err = purchaseListService.UpdateFields(
-		session.PurchaseListId,
-		bson.M{
-			"purchase_items": purchaseList.Items,
-			"created_at":     purchaseList.CreatedAt,
-			"updated_at":     purchaseList.UpdatedAt,
-		},
-	)
 	if err != nil {
 		return nil, err
 	}
@@ -436,7 +429,12 @@ func createFakeUpdate(envelope *MessageEnvelope) {
 }
 
 func crossOutItemFromPurchaseList(id primitive.ObjectID, itemHash string) (*db.PurchaseList, error) {
-	return purchaseListService.CrossOutItemFromPurchaseList(id, itemHash)
+	err := purchaseListService.CrossOutItemFromPurchaseList(id, itemHash)
+	if err != nil {
+		log.Println("failed to cross out", err)
+	}
+	pList, err := purchaseListService.FindByID(id)
+	return &pList, err
 }
 
 func getMessageChatId(envelope *MessageEnvelope) (int64, int) {
@@ -480,8 +478,15 @@ func readCallbackQuery(query *tgbotapi.CallbackQuery, c *dialog.MessageHandler) 
 		}
 		msg := dialog.MessageForReply{NewMessage: true, Text: "Введите название товара или список", AnswerCallback: &cbAnswer}
 		session.PreviousState = session.PostingState
-		session.PostingState = db.SessPStateDone
+		session.PostingState = db.SessPStateCreation
 		session.PurchaseListId = primitive.NilObjectID
+		purchaseList, err := createEmptyList(session)
+		if err != nil {
+			cbAnswer.Text = "Ошибка обновления сессии"
+			log.Println(err)
+			return dialog.MessageForReply{NewMessage: false, Text: "", AnswerCallback: &cbAnswer}
+		}
+		session.PurchaseListId = purchaseList.Id
 		err = updateSession(session)
 		if err != nil {
 			cbAnswer.Text = "Ошибка обновления сессии"
@@ -513,8 +518,33 @@ func sanitizeList(list []string) []string {
 	var result []string
 	for _, text := range list {
 		text = stripmd.Strip(text)
-		text = strings.ReplaceAll(text, ".", " ")
+		text = strings.ReplaceAll(text, ".", "․")
 		text = strings.Trim(text, "`~\n\t")
+		//crazy way to deal with long strings with emojis
+		if len(text) > 30 {
+			runes := []rune(text)
+			newRunes := []rune{}
+			i := 0
+			for _, letter := range runes {
+				if letter > 10000 && i < 5 {
+					letter = 64 //_
+					i++
+				}
+				newRunes = append(newRunes, letter)
+			}
+
+			newRunesS := string(newRunes)
+			if len(newRunesS) > 30 {
+				text = newRunesS[:30]
+				if len(text) > 30 {
+					text = newRunesS[:5]
+				}
+			} else {
+				text = newRunesS
+			}
+
+			text += "…"
+		}
 		if text == "" {
 			continue
 		}
@@ -562,13 +592,18 @@ func getStateByList(listID primitive.ObjectID) (*db.PurchaseList, *db.Session, *
 	return &pList, session, &user, err
 }
 
-func deleteMessage(chatID int64, msgID int) error {
+func deleteMessage(listID primitive.ObjectID, ids []db.TgMsgID) error {
 	if bot == nil {
 		log.Println("[No bot] ")
 		return errors.New("No bot")
 	}
 	log.Println("[message] DELETE")
 
-	_, err := bot.DeleteMessage(tgbotapi.NewDeleteMessage(chatID, msgID))
+	var err error
+	for _, id := range ids {
+		_, err = bot.DeleteMessage(tgbotapi.NewDeleteMessage(id.TgChatID, id.TgMessageID))
+		log.Println("[message] DELETE one", err)
+		_ = purchaseListService.DeleteMsgID(listID, id)
+	}
 	return err
 }

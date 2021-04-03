@@ -6,18 +6,22 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"log"
+	"time"
 )
 
+type TgMsgID struct {
+	TgChatID    int64 `json:"tg_chat_id" bson:"tg_chat_id"`
+	TgMessageID int   `json:"tg_message_id" bson:"tg_message_id"`
+}
 type PurchaseList struct {
-	Id          primitive.ObjectID `json:"_id" bson:"_id,omitempty"`
-	UserID      primitive.ObjectID `json:"user_id" bson:"user_id"`
-	Items       []PurchaseItem     `json:"purchase_items" bson:"purchase_items"`
-	TgChatID    int64              `json:"tg_chat_id" bson:"tg_chat_id"`
-	TgMessageID int                `json:"tg_message_id" bson:"tg_message_id"`
-	CreatedAt   primitive.DateTime `json:"created_at" bson:"created_at,omitempty"`
-	UpdatedAt   primitive.DateTime `json:"updated_at" bson:"updated_at,omitempty"`
+	Id           primitive.ObjectID `json:"_id" bson:"_id,omitempty"`
+	UserID       primitive.ObjectID `json:"user_id" bson:"user_id"`
+	Items        []PurchaseItem     `json:"purchase_items" bson:"purchase_items"`
+	DeletedItems []PurchaseItem     `json:"deleted_purchase_items" bson:"deleted_purchase_items"`
+	TgMsgID      []TgMsgID          `json:"tg_msg_id" bson:"tg_msg_id"`
+	CreatedAt    primitive.DateTime `json:"created_at" bson:"created_at,omitempty"`
+	UpdatedAt    primitive.DateTime `json:"updated_at" bson:"updated_at,omitempty"`
 }
 
 type PurchaseListService struct {
@@ -45,11 +49,21 @@ func (s *PurchaseListService) Create(list *PurchaseList) error {
 	return err
 }
 
-func (s *PurchaseListService) UpdateFields(id primitive.ObjectID, fields interface{}) error {
-	log.Println("pl.UpdateFields")
+func (s *PurchaseListService) AddMsgID(id primitive.ObjectID, msgID TgMsgID) error {
+	log.Println("pl.AddMsgID")
 	_, err := s.collection.UpdateOne(
 		context.Background(),
-		bson.M{"_id": id}, bson.M{"$set": fields},
+		bson.M{"_id": id}, bson.M{"$push": bson.M{"tg_msg_id": msgID}},
+	)
+
+	return err
+}
+
+func (s *PurchaseListService) DeleteMsgID(id primitive.ObjectID, msgID TgMsgID) error {
+	log.Println("pl.DeleteMsgID")
+	_, err := s.collection.UpdateOne(
+		context.Background(),
+		bson.M{"_id": id}, bson.M{"$pull": bson.M{"tg_msg_id": msgID}},
 	)
 
 	return err
@@ -63,41 +77,45 @@ func (s *PurchaseListService) FindByID(id primitive.ObjectID) (PurchaseList, err
 	return pList, err
 }
 
-func (s *PurchaseListService) CrossOutItemFromPurchaseList(id primitive.ObjectID, itemHash string) (*PurchaseList, error) {
+func (s *PurchaseListService) CrossOutItemFromPurchaseList(id primitive.ObjectID, itemHash string) error {
 	log.Println("pl.CrossOut")
-	/*
-		db.getCollection('purchaseLists').update(
-		    {"_id" : ObjectId("605f9d11cfd0e8a0ad111a7d")},
-		    {$set: {"purchase_items.$[elem].state": 1}},
-		    {
-		        multi: false,
-		        arrayFilters: [{"elem.name": "dk"}]
-		    }
-		)
-	*/
-	filters := []interface{}{
-		bson.M{"elem.hash": itemHash},
-	}
-	arrFilter := options.ArrayFilters{
-		bson.DefaultRegistry,
-		filters,
-	}
-	updOpts := options.UpdateOptions{
-		ArrayFilters: &arrFilter,
-	}
 	_, err := s.collection.UpdateOne(
 		context.Background(),
 		bson.M{"_id": id},
-		bson.M{"$set": bson.M{"purchase_items.$[elem].state": PiStateBought}},
-		&updOpts,
+		bson.M{
+			"$addToSet": bson.M{"deleted_purchase_items": itemHash},
+			"$pull":     bson.M{"purchase_items": itemHash},
+		},
 	)
-	purchaseList := PurchaseList{}
-	err = s.collection.FindOne(context.Background(), bson.M{
-		"_id": id,
-	}).Decode(&purchaseList)
-	if err != nil {
-		return nil, errors.New("failed to find a purchaseList")
-	}
+	return err
+}
 
+func (s *PurchaseListService) AddItemToPurchaseList(id primitive.ObjectID, itemHash string) error {
+	log.Println("pl.AddItemToPurchaseList")
+	_, err := s.collection.UpdateOne(
+		context.Background(),
+		bson.M{"_id": id},
+		bson.M{
+			"$addToSet": bson.M{"purchase_items": itemHash},
+		},
+	)
+	return err
+}
+
+func (s *PurchaseListService) CreateEmptyList(id primitive.ObjectID) (*PurchaseList, error) {
+	purchaseList := PurchaseList{
+		UserID:    id,
+		TgMsgID:   []TgMsgID{},
+		UpdatedAt: primitive.NewDateTimeFromTime(time.Now()),
+	}
+	purchaseList.UserID = id
+	purchaseList.CreatedAt = primitive.NewDateTimeFromTime(time.Now())
+	purchaseList.Items = []PurchaseItem{}
+	purchaseList.DeletedItems = []PurchaseItem{}
+	err := s.Create(&purchaseList)
+	if err != nil {
+		log.Println("Failed to insert a purchaseList", err)
+		return nil, errors.New("failed to save a purchaseList")
+	}
 	return &purchaseList, err
 }

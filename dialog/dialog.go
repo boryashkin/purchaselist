@@ -3,22 +3,40 @@ package dialog
 import (
 	"github.com/boryashkin/purchaselist/db"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"log"
 	"strings"
 )
 
 const (
 	ComStartBot         = "start"
-	ComStartHelp        = "help"
+	ComHelp             = "help"
 	ComCreatePost       = "create"
 	ComConfirm          = "ok"
+	ComClear            = "clear"
 	ComCancel           = "cancel"
 	ComDone             = "Гoтовo"
 	ComFinishedCrossout = "Нoвый списoк"
 )
 
 type MessageHandler struct {
-	Bot *tgbotapi.BotAPI
+	Bot                 *tgbotapi.BotAPI
+	PurchaseListService *db.PurchaseListService
+	commands            map[string]bool
+}
+
+func NewMessageHandler(api *tgbotapi.BotAPI, purchaseListService *db.PurchaseListService) MessageHandler {
+	list := map[string]bool{
+		ComStartBot:         true,
+		ComHelp:             true,
+		ComCreatePost:       true,
+		ComConfirm:          true,
+		ComClear:            true,
+		ComCancel:           true,
+		ComDone:             true,
+		ComFinishedCrossout: true,
+	}
+	return MessageHandler{Bot: api, commands: list, PurchaseListService: purchaseListService}
 }
 
 func (h *MessageHandler) ReadMessage(message *tgbotapi.Message) MessageDto {
@@ -28,16 +46,8 @@ func (h *MessageHandler) ReadMessage(message *tgbotapi.Message) MessageDto {
 	}
 	if message.IsCommand() {
 		m.Command = strings.ToLower(message.Command())
-		switch m.Command {
-		case "ok":
-			m.Command = ComConfirm
-			break
-		case "create":
-			m.Command = ComCreatePost
-			break
-		default:
-			m.Command = ComConfirm
-			break
+		if _, found := h.commands[m.Command]; !found {
+			m.Command = ComHelp
 		}
 	} else if message.Text == ComDone || message.Text == ComFinishedCrossout {
 		m.Command = ComConfirm
@@ -61,6 +71,15 @@ func (h *MessageHandler) GetNewStateByMessage(message *MessageDto, dState *Dialo
 	if newSessState == currState {
 		if currState == db.SessPStateDone {
 			newSessState = db.SessPStateCreation
+		}
+	}
+	if newSessState == db.SessPStateDone {
+		purchaseList, err := h.PurchaseListService.CreateEmptyList(dState.Session.UserId)
+		if err != nil {
+			log.Println("failed to create p list", err)
+			dState.Session.PurchaseListId = primitive.NilObjectID
+		} else {
+			dState.Session.PurchaseListId = purchaseList.Id
 		}
 	}
 	dState.Session.PreviousState = currState
@@ -89,8 +108,8 @@ func (h *MessageHandler) getNewSessionStateByCommand(command string, currState d
 		if currState == db.SessPStateNew || currState == db.SessPStateRegistered {
 			return db.SessPStateCreation
 		}
-	case ComCancel:
-		return db.SessPStateCreation
+	case ComClear:
+		return db.SessPStateDone
 
 	}
 
@@ -118,14 +137,22 @@ func (h *MessageHandler) GetMessageForReply(
 		msg = createMessageForPurchaseList(msg, purchaseList)
 		return msg
 	}
+	if m.Command != "" {
+		switch m.Command {
+		case ComHelp:
+			msg.Markdown = nil
+			msg.Text = " Чтобы составить список, записывайте товары сюда\n" +
+				" - Отдельными сообщениями\n" +
+				" - Одним сообщением, каждый товар с новой строки\n" +
+				" - Пересылайте сообщения из других чатов\n\n"
+			return msg
+		case ComClear:
+			msg.Text = "Список закрыт\n"
+			msg.NewMessage = true
+			return msg
+		}
+	}
 	switch session.PostingState {
-	case db.SessPStateRegistered, db.SessPStateNew:
-		msg.Text = "Приветствуем, " + user.Name + "! \n" +
-			" Чтобы составить список, записывайте товары сюда\n" +
-			" - Отдельными сообщениями\n" +
-			" - Одним сообщением, каждый товар с новой строки\n" +
-			" - Пересылайте сообщения из других чатов\n"
-		break
 	case db.SessPStateCreation:
 		if m.Command != "" && session.PreviousState == db.SessPStateNew {
 			msg.Markdown = nil
@@ -156,20 +183,7 @@ func (h *MessageHandler) GetMessageForReply(
 		}
 		break
 	default:
-		if m.Command == ComConfirm {
-			if session.PreviousState == db.SessPStateDone && session.PostingState != db.SessPStateRegistered {
-				msg.Text = "Поздравляем"
-				return msg
-			}
-		} else if m.Command == ComStartHelp {
-			msg.Text = "Инструкция по боту:\n" +
-				"/ok - подтвердить шаг при изменениях"
-			return msg
-		} else if m.Command == ComCancel {
-			msg.Text = "Вы отменили свои действия"
-			return msg
-		}
-		msg.Text = "Введите название товара"
+		msg.Text = "Не знаю, что ответить"
 	}
 
 	return msg
@@ -192,24 +206,28 @@ func createMessageForPurchaseList(msg MessageForReply, purchaseList *db.Purchase
 	log.Println("createMessageForPurchaseList")
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	msg.Text = ""
+	stylePre := ""
+	stylePost := ""
 	for _, key := range purchaseList.Items {
 		keys := []tgbotapi.InlineKeyboardButton{}
-		stylePre := ""
-		stylePost := ""
-		if key.State == db.PiStateBought {
-			stylePre = "~"
-			stylePost = "~"
-		} else {
-			keys = append(keys, tgbotapi.NewInlineKeyboardButtonData(key.Name, purchaseList.Id.Hex()+":"+key.Hash))
-			rows = append(rows, keys)
-
-		}
-		msg.Text += stylePre + key.Name + stylePost + "\n"
+		keyS := string(key)
+		//todo: add hash
+		keys = append(keys, tgbotapi.NewInlineKeyboardButtonData(keyS, purchaseList.Id.Hex()+":"+keyS))
+		rows = append(rows, keys)
+		msg.Text += stylePre + keyS + stylePost + "\n"
+	}
+	for _, key := range purchaseList.DeletedItems {
+		stylePre = "✔ ~"
+		stylePost = "~"
+		keyS := string(key)
+		msg.Text += stylePre + keyS + stylePost + "️\n"
 	}
 	if len(rows) > 0 {
+		log.Println("[BUTT]1")
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 		msg.InlineKeyboard = &keyboard
 	} else {
+		log.Println("[BUTT]2")
 		if msg.NewMessage != true { //hack to fix unremovable inline button for items like ~~2~~
 			msg.NewMessage = false
 		}
