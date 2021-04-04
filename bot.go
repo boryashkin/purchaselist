@@ -3,8 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/boryashkin/purchaselist/db"
@@ -365,8 +363,9 @@ func createOrUpdateList(m *dialog.MessageDto, session *db.Session) (*db.Purchase
 		}
 		purchaseList.UserID = session.UserId
 		purchaseList.CreatedAt = primitive.NewDateTimeFromTime(time.Now())
-		purchaseList.Items = []db.PurchaseItem{}
-		purchaseList.DeletedItems = []db.PurchaseItem{}
+		purchaseList.ItemsDictionary = []db.PurchaseItem{}
+		purchaseList.Items = []db.PurchaseItemHash{}
+		purchaseList.DeletedItemHashes = []db.PurchaseItemHash{}
 		err = purchaseListService.Create(&purchaseList)
 		if err != nil {
 			log.Println("Failed to insert a purchaseList", err)
@@ -385,9 +384,15 @@ func createOrUpdateList(m *dialog.MessageDto, session *db.Session) (*db.Purchase
 		textItems = append(textItems, createListFromText(m.Text)...)
 		textItems = sanitizeList(textItems)
 		for _, textItem := range textItems {
-			err = purchaseListService.AddItemToPurchaseList(purchaseList.Id, textItem)
+			err = purchaseListService.AddItemToPurchaseList(
+				purchaseList.Id,
+				db.PurchaseItemName(textItem),
+			)
 			if err != nil {
-				err = purchaseListService.AddItemToPurchaseList(purchaseList.Id, textItem)
+				err = purchaseListService.AddItemToPurchaseList(
+					purchaseList.Id,
+					db.PurchaseItemName(textItem),
+				)
 				log.Println("Failed to add an item", err)
 			}
 		}
@@ -442,11 +447,6 @@ func getMessageChatId(envelope *MessageEnvelope) (int64, int) {
 }
 func getCallbackChatId(envelope *MessageEnvelope) (int64, int) {
 	return envelope.Update.CallbackQuery.Message.Chat.ID, envelope.Update.CallbackQuery.Message.MessageID
-}
-
-func GetMD5Hash(text string) string {
-	hash := md5.Sum([]byte(strings.ToLower(text)))
-	return hex.EncodeToString(hash[:])
 }
 
 func readCallbackQuery(query *tgbotapi.CallbackQuery, c *dialog.MessageHandler) dialog.MessageForReply {
@@ -520,28 +520,11 @@ func sanitizeList(list []string) []string {
 		text = stripmd.Strip(text)
 		text = strings.ReplaceAll(text, ".", "․")
 		text = strings.Trim(text, "`~\n\t")
+		//todo It doesnt work!
 		//crazy way to deal with long strings with emojis
 		if len(text) > 30 {
-			runes := []rune(text)
-			newRunes := []rune{}
-			i := 0
-			for _, letter := range runes {
-				if letter > 10000 && i < 5 {
-					letter = 64 //_
-					i++
-				}
-				newRunes = append(newRunes, letter)
-			}
-
-			newRunesS := string(newRunes)
-			if len(newRunesS) > 30 {
-				text = newRunesS[:30]
-				if len(text) > 30 {
-					text = newRunesS[:5]
-				}
-			} else {
-				text = newRunesS
-			}
+			text = string([]rune(text)[:30])
+			text = strings.Trim(text, "\u0000")
 
 			text += "…"
 		}
@@ -558,7 +541,7 @@ func getUniqueItemsFromListBoundedToMax(list []string) []string {
 	keys := make(map[string]string)
 	i := 0
 	for _, key := range list {
-		hash := GetMD5Hash(key)
+		hash := db.GetMD5Hash(key)
 		if _, found := keys[hash]; !found {
 			keys[hash] = key
 			result = append(result, key)

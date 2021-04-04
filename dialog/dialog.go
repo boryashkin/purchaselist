@@ -205,22 +205,36 @@ func (h *MessageHandler) readPhoto(photo *[]tgbotapi.PhotoSize) []string {
 func createMessageForPurchaseList(msg MessageForReply, purchaseList *db.PurchaseList) MessageForReply {
 	log.Println("createMessageForPurchaseList")
 	rows := [][]tgbotapi.InlineKeyboardButton{}
+	dic := map[db.PurchaseItemHash]db.PurchaseItemName{}
+	name := ""
+	for _, pItem := range purchaseList.ItemsDictionary {
+		dic[pItem.Hash] = pItem.Name
+	}
 	msg.Text = ""
 	stylePre := ""
 	stylePost := ""
 	for _, key := range purchaseList.Items {
 		keys := []tgbotapi.InlineKeyboardButton{}
 		keyS := string(key)
-		//todo: add hash
-		keys = append(keys, tgbotapi.NewInlineKeyboardButtonData(keyS, purchaseList.Id.Hex()+":"+keyS))
+		if _, found := dic[key]; found {
+			name = string(dic[key])
+		} else {
+			name = "Название потерялось 😔"
+		}
+		log.Println("value, key", name, keyS)
+		keys = append(keys, tgbotapi.NewInlineKeyboardButtonData(name, purchaseList.Id.Hex()+":"+keyS))
 		rows = append(rows, keys)
-		msg.Text += stylePre + keyS + stylePost + "\n"
+		msg.Text += stylePre + name + stylePost + "\n"
 	}
-	for _, key := range purchaseList.DeletedItems {
+	for _, key := range purchaseList.DeletedItemHashes {
+		if _, found := dic[key]; found {
+			name = string(dic[key])
+		} else {
+			name = "Название потерялось 😔"
+		}
 		stylePre = "✔ ~"
 		stylePost = "~"
-		keyS := string(key)
-		msg.Text += stylePre + keyS + stylePost + "️\n"
+		msg.Text += stylePre + name + stylePost + "️\n"
 	}
 	if len(rows) > 0 {
 		log.Println("[BUTT]1")
@@ -236,6 +250,7 @@ func createMessageForPurchaseList(msg MessageForReply, purchaseList *db.Purchase
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(keys)
 		msg.InlineKeyboard = &keyboard
 	}
+	log.Println(msg)
 
 	return msg
 }
