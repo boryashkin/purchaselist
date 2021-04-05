@@ -23,6 +23,7 @@ type MessageHandler struct {
 	Bot                 *tgbotapi.BotAPI
 	PurchaseListService *db.PurchaseListService
 	commands            map[string]bool
+	textReplacer        *strings.Replacer
 }
 
 func NewMessageHandler(api *tgbotapi.BotAPI, purchaseListService *db.PurchaseListService) MessageHandler {
@@ -36,7 +37,31 @@ func NewMessageHandler(api *tgbotapi.BotAPI, purchaseListService *db.PurchaseLis
 		ComDone:             true,
 		ComFinishedCrossout: true,
 	}
-	return MessageHandler{Bot: api, commands: list, PurchaseListService: purchaseListService}
+	replacer := strings.NewReplacer(
+		//".", "․",
+		//"~", "～",
+		//"*", "＊",
+		//"-", "—",
+		"_", "\\_",
+		"*", "\\*",
+		"[", "\\[",
+		"]", "\\]",
+		"(", "\\(",
+		")", "\\)",
+		"~", "\\~",
+		"`", "\\`",
+		">", "\\>",
+		"#", "\\#",
+		"+", "\\+",
+		"-", "\\-",
+		"=", "\\=",
+		"|", "\\|",
+		"{", "\\{",
+		"}", "\\}",
+		".", "\\.",
+		"!", "\\!",
+	)
+	return MessageHandler{Bot: api, commands: list, PurchaseListService: purchaseListService, textReplacer: replacer}
 }
 
 func (h *MessageHandler) ReadMessage(message *tgbotapi.Message) MessageDto {
@@ -130,11 +155,12 @@ func (h *MessageHandler) GetMessageForReply(
 	m *MessageDto,
 	session *db.Session, user *db.User, purchaseList *db.PurchaseList,
 ) MessageForReply {
-	defaultMkdwn := tgbotapi.ModeMarkdown + "V2"
+	//defaultMkdwn := tgbotapi.ModeMarkdown + "V2"
+	defaultMkdwn := ""
 	msg := MessageForReply{NewMessage: true, Markdown: &defaultMkdwn}
 	if session == nil {
 		msg.NewMessage = false
-		msg = createMessageForPurchaseList(msg, purchaseList)
+		msg = h.createMessageForPurchaseList(msg, purchaseList)
 		return msg
 	}
 	if m.Command != "" {
@@ -165,21 +191,14 @@ func (h *MessageHandler) GetMessageForReply(
 		} else {
 			dmsg := len(purchaseList.Items) > 0
 			msg.DeletePrevious = &dmsg
-			msg = createMessageForPurchaseList(msg, purchaseList)
+			msg = h.createMessageForPurchaseList(msg, purchaseList)
 		}
 
-		break
-	case db.SessPStateInProgress:
-		if m.Text == "" {
-			msg.Text = "Добавьте название товара или список, если нужно"
-		} else {
-			msg.Text = "Введите /ok, чтобы потдвердить"
-		}
 		break
 	case db.SessPStateDone:
 		if m.Text == "" {
 			log.Println("[GMFR] 3")
-			msg = createMessageForPurchaseList(msg, purchaseList)
+			msg = h.createMessageForPurchaseList(msg, purchaseList)
 		}
 		break
 	default:
@@ -202,7 +221,7 @@ func (h *MessageHandler) readPhoto(photo *[]tgbotapi.PhotoSize) []string {
 	return urls
 }
 
-func createMessageForPurchaseList(msg MessageForReply, purchaseList *db.PurchaseList) MessageForReply {
+func (h *MessageHandler) createMessageForPurchaseList(msg MessageForReply, purchaseList *db.PurchaseList) MessageForReply {
 	log.Println("createMessageForPurchaseList")
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	dic := map[db.PurchaseItemHash]db.PurchaseItemName{}
@@ -210,9 +229,21 @@ func createMessageForPurchaseList(msg MessageForReply, purchaseList *db.Purchase
 	for _, pItem := range purchaseList.ItemsDictionary {
 		dic[pItem.Hash] = pItem.Name
 	}
+	tmdwn := tgbotapi.ModeMarkdown + "V2"
+	msg.Markdown = &tmdwn
 	msg.Text = ""
-	stylePre := ""
-	stylePost := ""
+	stylePre := "✔️ ~"
+	stylePost := " ~"
+	for _, key := range purchaseList.DeletedItemHashes {
+		if _, found := dic[key]; found {
+			name = string(dic[key])
+		} else {
+			name = "Название потерялось 😔"
+		}
+		msg.Text += stylePre + h.textReplacer.Replace(name) + stylePost + "️\n"
+	}
+	stylePre = ""
+	stylePost = ""
 	for _, key := range purchaseList.Items {
 		keys := []tgbotapi.InlineKeyboardButton{}
 		keyS := string(key)
@@ -224,27 +255,12 @@ func createMessageForPurchaseList(msg MessageForReply, purchaseList *db.Purchase
 		log.Println("value, key", name, keyS)
 		keys = append(keys, tgbotapi.NewInlineKeyboardButtonData(name, purchaseList.Id.Hex()+":"+keyS))
 		rows = append(rows, keys)
-		msg.Text += stylePre + name + stylePost + "\n"
-	}
-	for _, key := range purchaseList.DeletedItemHashes {
-		if _, found := dic[key]; found {
-			name = string(dic[key])
-		} else {
-			name = "Название потерялось 😔"
-		}
-		stylePre = "✔ ~"
-		stylePost = "~"
-		msg.Text += stylePre + name + stylePost + "️\n"
+		msg.Text += stylePre + h.textReplacer.Replace(name) + stylePost + "\n"
 	}
 	if len(rows) > 0 {
-		log.Println("[BUTT]1")
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 		msg.InlineKeyboard = &keyboard
 	} else {
-		log.Println("[BUTT]2")
-		if msg.NewMessage != true { //hack to fix unremovable inline button for items like ~~2~~
-			msg.NewMessage = false
-		}
 		keys := []tgbotapi.InlineKeyboardButton{}
 		keys = append(keys, tgbotapi.NewInlineKeyboardButtonData(ComFinishedCrossout, purchaseList.Id.Hex()+":"+ComFinishedCrossout))
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(keys)

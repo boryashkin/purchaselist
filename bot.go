@@ -320,7 +320,10 @@ func reply(chatID int64, messageID int, forReply dialog.MessageForReply) (*tgbot
 	} else {
 		log.Println("EditMessage")
 		msgEdit := tgbotapi.NewEditMessageText(chatID, messageID, forReply.Text)
-		msgEdit.ParseMode = tgbotapi.ModeMarkdown + "V2"
+		if forReply.Markdown != nil {
+			msgEdit.ParseMode = *forReply.Markdown
+		}
+
 		if forReply.InlineKeyboard != nil {
 			msgEdit.ReplyMarkup = forReply.InlineKeyboard
 		}
@@ -518,9 +521,7 @@ func sanitizeList(list []string) []string {
 	var result []string
 	for _, text := range list {
 		text = stripmd.Strip(text)
-		text = strings.ReplaceAll(text, ".", "․")
-		text = strings.Trim(text, "`~\n\t")
-		//todo It doesnt work!
+		text = strings.Trim(text, "\n\t")
 		//crazy way to deal with long strings with emojis
 		if len(text) > 30 {
 			text = string([]rune(text)[:30])
