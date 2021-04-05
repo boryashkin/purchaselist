@@ -173,7 +173,8 @@ func (h *MessageHandler) GetMessageForReply(
 				" - Пересылайте сообщения из других чатов\n\n"
 			return msg
 		case ComClear:
-			msg.Text = "Список закрыт\n"
+			msg.Text = "Список закрыт\n\n" +
+				"Введите название товара или список"
 			msg.NewMessage = true
 			return msg
 		}
