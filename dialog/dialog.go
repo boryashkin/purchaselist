@@ -6,6 +6,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"log"
 	"strings"
+	"time"
 )
 
 const (
@@ -149,6 +150,10 @@ type MessageForReply struct {
 	AnswerCallback *tgbotapi.CallbackConfig
 	ReplyKeyboard  *tgbotapi.ReplyKeyboardMarkup
 	Markdown       *string
+	CreatedAt      *time.Time
+	SessionID      primitive.ObjectID
+	PListID        primitive.ObjectID
+	Rand           int
 }
 
 func (h *MessageHandler) GetMessageForReply(
@@ -234,7 +239,7 @@ func (h *MessageHandler) createMessageForPurchaseList(msg MessageForReply, purch
 	msg.Markdown = &tmdwn
 	msg.Text = ""
 	stylePre := "✔️ ~"
-	stylePost := " ~"
+	stylePost := "~ "
 	for _, key := range purchaseList.DeletedItemHashes {
 		if _, found := dic[key]; found {
 			name = string(dic[key])
@@ -253,7 +258,6 @@ func (h *MessageHandler) createMessageForPurchaseList(msg MessageForReply, purch
 		} else {
 			name = "Название потерялось 😔"
 		}
-		log.Println("value, key", name, keyS)
 		keys = append(keys, tgbotapi.NewInlineKeyboardButtonData(name, purchaseList.Id.Hex()+":"+keyS))
 		rows = append(rows, keys)
 		msg.Text += stylePre + h.textReplacer.Replace(name) + stylePost + "\n"
@@ -267,7 +271,6 @@ func (h *MessageHandler) createMessageForPurchaseList(msg MessageForReply, purch
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(keys)
 		msg.InlineKeyboard = &keyboard
 	}
-	log.Println(msg)
 
 	return msg
 }

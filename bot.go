@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"github.com/boryashkin/purchaselist/db"
 	"github.com/boryashkin/purchaselist/dialog"
+	"github.com/boryashkin/purchaselist/queue"
 	"github.com/go-telegram-bot-api/telegram-bot-api"
 	"github.com/writeas/go-strip-markdown"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"log"
+	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -45,7 +47,7 @@ var (
 	userService         db.UserService
 	sessionService      db.SessionService
 	purchaseListService db.PurchaseListService
-	testMemoryMap       map[string][]string
+	delayMessage        queue.DelayMessage
 )
 
 func generateStdinUpdates(ch chan *MessageEnvelope) {
@@ -145,9 +147,8 @@ func main() {
 	userService = db.NewUserService(users)
 	sessionService = db.NewSessionService(sessions)
 	purchaseListService = db.NewPurchaseListService(purchaseLists)
-	testMemoryMap = map[string][]string{
-		"": {""},
-	}
+	delayMessage = queue.NewDelayMessage(dialog.Reply, &purchaseListService)
+	rand.Seed(16000000000) //random number
 	//ch := make(chan *MessageEnvelope)
 	//go generateStdinUpdates(ch)
 	//go generateSingleThreadedTgUpdates(ch)//side effect: duplicate messages on race conditions
@@ -221,13 +222,27 @@ func handleAsync(envelope *MessageEnvelope) {
 	if msg.DeletePrevious != nil && *msg.DeletePrevious == true {
 		deleteMessage(dState.Session.PurchaseListId, prevMsgID)
 	}
-	sent, err := reply(chatID, msgID, msg)
-	if err == nil {
-		msgID := db.TgMsgID{
-			TgChatID:    sent.Chat.ID,
-			TgMessageID: sent.MessageID,
+	log.Println(msg.DeletePrevious)
+	dd := time.Now()
+	msg.CreatedAt = &dd
+	msg.Rand = rand.Intn(16000000000)
+	log.Println("[rand]", msg.Rand)
+	msg.SessionID = dState.Session.Id
+	msg.PListID = dState.PurchaseList.Id
+	if msg.DeletePrevious != nil {
+		delayMessage.SetLastDate(msg.PListID, msg.Rand)
+		replyDelayed(chatID, msgID, msg)
+	} else {
+		log.Println("sending straight")
+		delayMessage.SetLastDate(msg.PListID, msg.Rand)
+		sent, err := reply(chatID, msgID, msg)
+		if err == nil {
+			msgID := db.TgMsgID{
+				TgChatID:    sent.Chat.ID,
+				TgMessageID: sent.MessageID,
+			}
+			purchaseListService.AddMsgID(dState.PurchaseList.Id, msgID)
 		}
-		purchaseListService.AddMsgID(dState.PurchaseList.Id, msgID)
 	}
 }
 
@@ -294,57 +309,10 @@ func updateSession(session *db.Session) error {
 	return sessionService.UpdateSession(session)
 }
 func reply(chatID int64, messageID int, forReply dialog.MessageForReply) (*tgbotapi.Message, error) {
-	if bot == nil {
-		log.Println("[No bot] ", forReply.Text)
-		return nil, errors.New("No bot")
-	}
-
-	var msg tgbotapi.Chattable
-	if forReply.NewMessage {
-		if forReply.Text == "" {
-			log.Println("not sent")
-			return nil, errors.New("Not sent")
-		}
-		msgNew := tgbotapi.NewMessage(chatID, forReply.Text)
-		//msgNew.ReplyToMessageID = messageID
-		if forReply.Markdown != nil {
-			msgNew.ParseMode = *forReply.Markdown
-		}
-		if forReply.InlineKeyboard != nil {
-			msgNew.ReplyMarkup = forReply.InlineKeyboard
-		}
-		if forReply.ReplyKeyboard != nil {
-			msgNew.ReplyMarkup = forReply.ReplyKeyboard
-		}
-		msg = msgNew
-	} else {
-		log.Println("EditMessage")
-		msgEdit := tgbotapi.NewEditMessageText(chatID, messageID, forReply.Text)
-		if forReply.Markdown != nil {
-			msgEdit.ParseMode = *forReply.Markdown
-		}
-
-		if forReply.InlineKeyboard != nil {
-			msgEdit.ReplyMarkup = forReply.InlineKeyboard
-		}
-		msg = msgEdit
-	}
-	if forReply.AnswerCallback != nil {
-		_, err := bot.AnswerCallbackQuery(*forReply.AnswerCallback)
-		if err != nil {
-			log.Println("err while answering CallbackQuery " + err.Error())
-		}
-	}
-
-	sent, err := bot.Send(msg)
-	if err != nil {
-		log.Println("err while sending " + err.Error())
-		msgNew := tgbotapi.NewMessage(chatID, "Произошла ошибка при отправке")
-		_, _ = bot.Send(msgNew)
-	} else {
-		log.Println("bot.Send() ok")
-	}
-	return &sent, err
+	return dialog.Reply(bot, chatID, messageID, forReply)
+}
+func replyDelayed(chatID int64, messageID int, forReply dialog.MessageForReply) {
+	go delayMessage.ExecItem(bot, chatID, messageID, forReply)
 }
 func createEmptyList(session *db.Session) (*db.PurchaseList, error) {
 	return purchaseListService.CreateEmptyList(session.UserId)
