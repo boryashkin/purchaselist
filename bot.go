@@ -453,14 +453,14 @@ func readCallbackQuery(query *tgbotapi.CallbackQuery, c *dialog.MessageHandler) 
 		session.PurchaseListId = primitive.NilObjectID
 		purchaseList, err := createEmptyList(session)
 		if err != nil {
-			cbAnswer.Text = "Ошибка обновления сессии"
+			cbAnswer.Text = "Ошибка обновления сессии, попробуйте ещё раз"
 			log.Println(err)
 			return dialog.MessageForReply{NewMessage: false, Text: "", AnswerCallback: &cbAnswer}
 		}
 		session.PurchaseListId = purchaseList.Id
 		err = updateSession(session)
 		if err != nil {
-			cbAnswer.Text = "Ошибка обновления сессии"
+			cbAnswer.Text = "Ошибка обновления сессии, попробуйте ещё раз"
 			log.Println(err)
 			return dialog.MessageForReply{NewMessage: false, Text: "", AnswerCallback: &cbAnswer}
 		}
@@ -468,7 +468,7 @@ func readCallbackQuery(query *tgbotapi.CallbackQuery, c *dialog.MessageHandler) 
 	} else { //element is crossed out
 		purchaseList, err := crossOutItemFromPurchaseList(listID, itemHash)
 		if err != nil {
-			cbAnswer.Text = "Ошибка"
+			cbAnswer.Text = "Ошибка, попробуйте ещё раз или нажмите /clear"
 			log.Println(err)
 			return dialog.MessageForReply{NewMessage: false, Text: "failed to cross out an item", AnswerCallback: &cbAnswer}
 		}

@@ -208,7 +208,7 @@ func (h *MessageHandler) GetMessageForReply(
 		}
 		break
 	default:
-		msg.Text = "Не знаю, что ответить"
+		msg.Text = "Не знаю, что ответить. Попробуйте ещё раз или нажмите /clear"
 	}
 
 	return msg

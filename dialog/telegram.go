@@ -54,7 +54,7 @@ func Reply(bot *tgbotapi.BotAPI, chatID int64, messageID int, forReply MessageFo
 	sent, err := bot.Send(msg)
 	if err != nil {
 		log.Println("err while sending " + err.Error())
-		msgNew := tgbotapi.NewMessage(chatID, "Произошла ошибка при отправке")
+		msgNew := tgbotapi.NewMessage(chatID, "Произошла ошибка при отправке. Попробуйте ещё раз или нажмите /clear")
 		_, _ = bot.Send(msgNew)
 	} else {
 		log.Println("bot.Send() ok")
