@@ -3,7 +3,9 @@ package queue
 import (
 	"github.com/boryashkin/purchaselist/db"
 	"github.com/boryashkin/purchaselist/dialog"
+	"github.com/boryashkin/purchaselist/metrics"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"log"
 	"time"
@@ -31,6 +33,7 @@ func (d *DelayMessage) ExecItem(bot *tgbotapi.BotAPI, chatID int64, messageID in
 	if reply.CreatedAt != nil {
 		time.Sleep(time.Millisecond * 500)
 		if reply.Rand == d.messages[reply.PListID] {
+			metrics.QueueExecItem.With(prometheus.Labels{"action": "exec_delayed"}).Inc()
 			sent, err := d.fn(bot, chatID, messageID, reply)
 			if err == nil {
 				msgID := db.TgMsgID{
@@ -40,9 +43,11 @@ func (d *DelayMessage) ExecItem(bot *tgbotapi.BotAPI, chatID int64, messageID in
 				d.pListService.AddMsgID(reply.PListID, msgID)
 			}
 		} else {
+			metrics.QueueExecItem.With(prometheus.Labels{"action": "skip"}).Inc()
 			log.Println("[queue] skip")
 		}
 	} else {
+		metrics.QueueExecItem.With(prometheus.Labels{"action": "no_delay"}).Inc()
 		d.fn(bot, chatID, messageID, reply)
 	}
 }

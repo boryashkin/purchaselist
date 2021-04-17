@@ -9,12 +9,14 @@ import (
 	"github.com/boryashkin/purchaselist/dialog"
 	"github.com/boryashkin/purchaselist/queue"
 	"github.com/go-telegram-bot-api/telegram-bot-api"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/writeas/go-strip-markdown"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -131,6 +133,9 @@ func generateTgUpdates() *tgbotapi.UpdatesChannel {
 }
 
 func main() {
+	h := promhttp.Handler()
+	http.Handle("/metrics", h)
+	go http.ListenAndServe(":"+os.Getenv("METRICSPORT"), nil)
 	client, err := mongo.NewClient(options.Client().ApplyURI("mongodb://" + os.Getenv("MONGODB") + ":" + os.Getenv("MONGOPORT")))
 	if err != nil {
 		log.Println("Mongo instantiation err", err)

@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"errors"
+	"github.com/boryashkin/purchaselist/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -46,6 +48,11 @@ func (s *SessionService) FindByUserID(id primitive.ObjectID) (Session, error) {
 	err := s.collection.FindOne(context.Background(), bson.M{
 		"user_id": id,
 	}).Decode(&session)
+	if err != nil {
+		metrics.DbSessionFindByUserID.With(prometheus.Labels{"result": "error"}).Inc()
+	} else {
+		metrics.DbSessionFindByUserID.With(prometheus.Labels{"result": "success"}).Inc()
+	}
 
 	return session, err
 }
@@ -70,10 +77,12 @@ func (s *SessionService) Create(session *Session) error {
 		&opts,
 	)
 	if err != nil {
+		metrics.DbSessionCreate.With(prometheus.Labels{"result": "error"}).Inc()
 		return err
 	}
 
 	if result.UpsertedCount > 0 {
+		metrics.DbSessionCreate.With(prometheus.Labels{"result": "success"}).Inc()
 		if oid, ok := result.UpsertedID.(primitive.ObjectID); ok {
 			session.Id = oid
 		} else {
@@ -81,6 +90,7 @@ func (s *SessionService) Create(session *Session) error {
 			return errors.New("failed to extract id")
 		}
 	} else {
+		metrics.DbSessionCreate.With(prometheus.Labels{"result": "noop"}).Inc()
 		return errors.New("already exists")
 	}
 
@@ -97,7 +107,10 @@ func (s *SessionService) UpdateSession(session *Session) error {
 		},
 	})
 	if err != nil {
+		metrics.DbSessionUpdate.With(prometheus.Labels{"result": "error"}).Inc()
 		return errors.New("failed to update a session")
 	}
+	metrics.DbSessionUpdate.With(prometheus.Labels{"result": "success"}).Inc()
+
 	return nil
 }

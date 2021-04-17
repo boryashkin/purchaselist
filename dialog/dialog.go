@@ -78,6 +78,7 @@ func (h *MessageHandler) ReadMessage(message *tgbotapi.Message) MessageDto {
 	} else if message.Text == ComDone || message.Text == ComFinishedCrossout {
 		m.Command = ComConfirm
 		m.Text = ""
+		//todo: remove photo if
 	} else if message.Photo != nil && *message.Photo != nil && len(*message.Photo) > 0 {
 		m.PhotoUrls = h.readPhoto(message.Photo)
 	} else if message.Text != "" {

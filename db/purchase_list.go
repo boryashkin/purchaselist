@@ -5,6 +5,8 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
+	"github.com/boryashkin/purchaselist/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -54,8 +56,10 @@ func (s *PurchaseListService) Create(list *PurchaseList) error {
 	}
 	if oid, ok := result.InsertedID.(primitive.ObjectID); ok {
 		list.Id = oid
+		metrics.DbPlistCreate.With(prometheus.Labels{"result": "success"}).Inc()
 	} else {
 		log.Println("Failed to extract ObjectId")
+		metrics.DbPlistCreate.With(prometheus.Labels{"result": "error"}).Inc()
 		return errors.New("failed to extract id")
 	}
 	return err
@@ -67,6 +71,11 @@ func (s *PurchaseListService) AddMsgID(id primitive.ObjectID, msgID TgMsgID) err
 		context.Background(),
 		bson.M{"_id": id}, bson.M{"$push": bson.M{"tg_msg_id": msgID}},
 	)
+	if err != nil {
+		metrics.DbPlistAddMsgID.With(prometheus.Labels{"result": "error"}).Inc()
+	} else {
+		metrics.DbPlistAddMsgID.With(prometheus.Labels{"result": "success"}).Inc()
+	}
 
 	return err
 }
@@ -77,6 +86,11 @@ func (s *PurchaseListService) DeleteMsgID(id primitive.ObjectID, msgID TgMsgID) 
 		context.Background(),
 		bson.M{"_id": id}, bson.M{"$pull": bson.M{"tg_msg_id": msgID}},
 	)
+	if err != nil {
+		metrics.DbPlistDeleteMsgID.With(prometheus.Labels{"result": "error"}).Inc()
+	} else {
+		metrics.DbPlistDeleteMsgID.With(prometheus.Labels{"result": "success"}).Inc()
+	}
 
 	return err
 }
@@ -85,6 +99,11 @@ func (s *PurchaseListService) FindByID(id primitive.ObjectID) (PurchaseList, err
 	log.Println("pl.FindByID", id)
 	var pList PurchaseList
 	err := s.collection.FindOne(context.Background(), bson.M{"_id": id}).Decode(&pList)
+	if err != nil {
+		metrics.DbPlistFindByID.With(prometheus.Labels{"result": "error"}).Inc()
+	} else {
+		metrics.DbPlistFindByID.With(prometheus.Labels{"result": "success"}).Inc()
+	}
 
 	return pList, err
 }
@@ -99,6 +118,12 @@ func (s *PurchaseListService) CrossOutItemFromPurchaseList(id primitive.ObjectID
 			"$pull":     bson.M{"purchase_items": itemHash},
 		},
 	)
+	if err != nil {
+		metrics.DbPlistCrossOutItemFromPurchaseList.With(prometheus.Labels{"result": "error"}).Inc()
+	} else {
+		metrics.DbPlistCrossOutItemFromPurchaseList.With(prometheus.Labels{"result": "success"}).Inc()
+	}
+
 	return err
 }
 
@@ -115,6 +140,12 @@ func (s *PurchaseListService) AddItemToPurchaseList(id primitive.ObjectID, item 
 			},
 		},
 	)
+	if err != nil {
+		metrics.DbPlistAddItemToPurchaseList.With(prometheus.Labels{"result": "error"}).Inc()
+	} else {
+		metrics.DbPlistAddItemToPurchaseList.With(prometheus.Labels{"result": "success"}).Inc()
+	}
+
 	return err
 }
 

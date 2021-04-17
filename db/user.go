@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"errors"
+	"github.com/boryashkin/purchaselist/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -67,10 +69,12 @@ func (s *UserService) Upsert(user *User) error {
 		&opts,
 	)
 	if err != nil {
+		metrics.DbUserUpsert.With(prometheus.Labels{"result": "error"}).Inc()
 		return err
 	}
 
 	if result.UpsertedCount > 0 {
+		metrics.DbUserUpsert.With(prometheus.Labels{"result": "success"}).Inc()
 		if oid, ok := result.UpsertedID.(primitive.ObjectID); ok {
 			log.Println("Upserted")
 			user.Id = oid
@@ -79,6 +83,7 @@ func (s *UserService) Upsert(user *User) error {
 			return errors.New("failed to extract id")
 		}
 	} else {
+		metrics.DbUserUpsert.With(prometheus.Labels{"result": "noop"}).Inc()
 		return errors.New("user already exists")
 	}
 
@@ -89,6 +94,11 @@ func (s *UserService) FindByID(id primitive.ObjectID) (User, error) {
 	log.Println("user.findByID")
 	var user User
 	err := s.collection.FindOne(context.Background(), bson.M{"_id": id}).Decode(&user)
+	if err != nil {
+		metrics.DbUserFindByID.With(prometheus.Labels{"result": "error"}).Inc()
+	} else {
+		metrics.DbUserFindByID.With(prometheus.Labels{"result": "success"}).Inc()
+	}
 
 	return user, err
 }
@@ -97,6 +107,11 @@ func (s *UserService) FindByTgID(id int) (User, error) {
 	log.Println("user.findByTgID")
 	var user User
 	err := s.collection.FindOne(context.Background(), bson.M{"tg_id": id}).Decode(&user)
+	if err != nil {
+		metrics.DbUserFindByTgID.With(prometheus.Labels{"result": "error"}).Inc()
+	} else {
+		metrics.DbUserFindByTgID.With(prometheus.Labels{"result": "success"}).Inc()
+	}
 
 	return user, err
 }
