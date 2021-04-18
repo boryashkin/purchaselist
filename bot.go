@@ -135,7 +135,7 @@ func generateTgUpdates() *tgbotapi.UpdatesChannel {
 func main() {
 	h := promhttp.Handler()
 	http.Handle("/metrics", h)
-	go http.ListenAndServe(":"+os.Getenv("METRICSPORT"), nil)
+	go http.ListenAndServe("0.0.0.0:"+os.Getenv("METRICSPORT"), nil)
 	client, err := mongo.NewClient(options.Client().ApplyURI("mongodb://" + os.Getenv("MONGODB") + ":" + os.Getenv("MONGOPORT")))
 	if err != nil {
 		log.Println("Mongo instantiation err", err)
