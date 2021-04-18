@@ -17,6 +17,7 @@ services:
       - TGTOKEN=${TGTOKEN}
       - MONGODB=${MONGODB}
       - MONGOPORT=${MONGOPORT}
+      - METRICSPORT=${METRICSPORT}
     ports:
       - ${METRICSPORT}:${METRICSPORT}
     depends_on:
