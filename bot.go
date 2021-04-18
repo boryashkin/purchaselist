@@ -40,7 +40,6 @@ const (
 )
 
 var (
-	client        *mongo.Client
 	users         *mongo.Collection
 	sessions      *mongo.Collection
 	purchaseLists *mongo.Collection
@@ -280,10 +279,11 @@ func getOrRegisterUser(message *tgbotapi.Message) (*db.User, error) {
 		phone = message.Contact.PhoneNumber
 	}
 	user := db.User{
-		TgId:  message.From.ID,
-		Name:  message.From.FirstName,
-		Phone: phone,
-		Lang:  message.From.LanguageCode,
+		TgId:      message.From.ID,
+		Name:      message.From.FirstName,
+		Phone:     phone,
+		Lang:      message.From.LanguageCode,
+		CreatedAt: primitive.NewDateTimeFromTime(time.Now()),
 	}
 	err := userService.Upsert(&user)
 	if err != nil {
@@ -297,6 +297,7 @@ func getOrCreateSession(user *db.User) (*db.Session, error) {
 		UserId:         user.Id,
 		PostingState:   db.SessPStateNew,
 		PurchaseListId: primitive.NilObjectID,
+		CreatedAt:      primitive.NewDateTimeFromTime(time.Now()),
 	}
 	log.Println("getOrCreateSession")
 	err := sessionService.Create(&session)
