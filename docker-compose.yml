@@ -18,6 +18,7 @@ services:
       - MONGODB=${MONGODB}
       - MONGOPORT=${MONGOPORT}
       - METRICSPORT=${METRICSPORT}
+      - BOTNAME=${BOTNAME}
     ports:
       - ${METRICSPORT}:${METRICSPORT}
     depends_on:
