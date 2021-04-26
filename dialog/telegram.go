@@ -47,6 +47,7 @@ func Reply(bot *tgbotapi.BotAPI, chatMsgID ChatMessageID, forReply MessageForRep
 		log.Println("EditMessage")
 		var msgEdit tgbotapi.EditMessageTextConfig
 		if chatMsgID.InlineMessageID != nil {
+			metrics.TgCbInlineAnswer.With(prometheus.Labels{"result": "success"}).Inc()
 			msgEdit = tgbotapi.EditMessageTextConfig{
 				BaseEdit: tgbotapi.BaseEdit{
 					InlineMessageID: *chatMsgID.InlineMessageID,

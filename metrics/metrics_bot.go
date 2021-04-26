@@ -27,9 +27,18 @@ var (
 		},
 		[]string{"result"},
 	)
+	TgCbInlineAnswer = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bot_tg_cb_inline_answer",
+			Help: "The total number of telegram inline callback answers",
+		},
+		[]string{"result"},
+	)
 )
 
 func InitBotMetrics() {
 	prometheus.MustRegister(TgMsgSent)
 	prometheus.MustRegister(TgMsgRetrySent)
+	prometheus.MustRegister(TgCbAnswer)
+	prometheus.MustRegister(TgCbInlineAnswer)
 }
