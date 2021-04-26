@@ -26,6 +26,7 @@ type PurchaseItem struct {
 type TgMsgID struct {
 	TgChatID    int64 `json:"tg_chat_id" bson:"tg_chat_id"`
 	TgMessageID int   `json:"tg_message_id" bson:"tg_message_id"`
+	IsInitial   bool  `json:"is_initial" bson:"is_initial"`
 }
 type PurchaseList struct {
 	Id                primitive.ObjectID `json:"_id" bson:"_id,omitempty"`
@@ -33,6 +34,7 @@ type PurchaseList struct {
 	ItemsDictionary   []PurchaseItem     `json:"items_dictionary" bson:"items_dictionary"`
 	Items             []PurchaseItemHash `json:"purchase_items" bson:"purchase_items"`
 	DeletedItemHashes []PurchaseItemHash `json:"deleted_purchase_items" bson:"deleted_purchase_items"`
+	InlineMsgID       string             `json:"inline_msg_id" bson:"inline_msg_id"`
 	TgMsgID           []TgMsgID          `json:"tg_msg_id" bson:"tg_msg_id"`
 	CreatedAt         primitive.DateTime `json:"created_at" bson:"created_at,omitempty"`
 	UpdatedAt         primitive.DateTime `json:"updated_at" bson:"updated_at,omitempty"`
@@ -150,6 +152,7 @@ func (s *PurchaseListService) AddItemToPurchaseList(id primitive.ObjectID, item 
 }
 
 func (s *PurchaseListService) CreateEmptyList(id primitive.ObjectID) (*PurchaseList, error) {
+	log.Println("CreateEmptyList")
 	purchaseList := PurchaseList{
 		UserID:    id,
 		TgMsgID:   []TgMsgID{},

@@ -178,8 +178,7 @@ func main() {
 }
 
 func handleAsync(envelope *MessageEnvelope) {
-	var chatID int64
-	var msgID int
+	var chatMsgID dialog.ChatMessageID
 	if envelope.Update == nil {
 		// tests
 		createFakeUpdate(envelope)
@@ -193,38 +192,48 @@ func handleAsync(envelope *MessageEnvelope) {
 
 	c := dialog.NewMessageHandler(bot, &purchaseListService)
 
+	log.Println("[new mess] something", update)
 	if update.CallbackQuery != nil {
-		chatID, msgID = getCallbackChatId(envelope)
+		log.Println("[cb] new", update.CallbackQuery)
+		chatMsgID = getCallbackChatId(envelope)
 		msg = readCallbackQuery(update.CallbackQuery, &c)
-		reply(chatID, msgID, msg)
+		reply(chatMsgID, msg)
 		return
 	} else if update.Message != nil {
 		message = update.Message
-		chatID, msgID = getMessageChatId(envelope)
+		chatMsgID = getMessageChatId(envelope)
 		log.Printf("[RECEIVED][%d] %s", message.From.ID, message.Text)
 
-		m = c.ReadMessage(message)
-		dState, err = createDialogStateFromMessage(&m, message)
-		if err != nil {
-			reply(chatID, msgID, dialog.MessageForReply{Text: err.Error()})
-			return
-		}
-
+		m = c.ReadMessage(message, chatMsgID)
+	} else if update.InlineQuery != nil {
+		log.Println("[Inline]", update.InlineQuery)
+		chatMsgID = getInlineMessageChatId(update.InlineQuery)
+		m = c.ReadInlineQuery(update.InlineQuery, chatMsgID)
 	} else {
-		log.Println("[noop] Unknown request")
+		log.Println("[noop] Unknown request", update)
 		return
 	}
 
-	prevMsgID := dState.PurchaseList.TgMsgID
+	dState, err = createDialogStateFromMessage(&m)
+	if err != nil {
+		reply(chatMsgID, dialog.MessageForReply{Text: err.Error()})
+		return
+	}
+
+	prevPlist := *dState.PurchaseList
 	st := c.GetNewStateByMessage(&m, dState)
 	err = updateSession(st.Session)
 	if err != nil {
-		reply(chatID, msgID, dialog.MessageForReply{Text: err.Error()})
+		reply(chatMsgID, dialog.MessageForReply{Text: err.Error()})
 		return
 	}
 	msg = c.GetMessageForReply(&m, dState.Session, dState.User, dState.PurchaseList)
+	if m.ChatMsgID.InlineMessageID != nil {
+		replyInline(chatMsgID, msg)
+		return
+	}
 	if msg.DeletePrevious != nil && *msg.DeletePrevious == true {
-		deleteMessage(dState.Session.PurchaseListId, prevMsgID)
+		deleteMessage(dState.Session.PurchaseListId, &prevPlist)
 	}
 	log.Println(msg.DeletePrevious)
 	dd := time.Now()
@@ -235,11 +244,11 @@ func handleAsync(envelope *MessageEnvelope) {
 	msg.PListID = dState.PurchaseList.Id
 	if msg.DeletePrevious != nil {
 		delayMessage.SetLastDate(msg.PListID, msg.Rand)
-		replyDelayed(chatID, msgID, msg)
+		replyDelayed(chatMsgID, msg)
 	} else {
 		log.Println("sending straight")
 		delayMessage.SetLastDate(msg.PListID, msg.Rand)
-		sent, err := reply(chatID, msgID, msg)
+		sent, err := reply(chatMsgID, msg)
 		if err == nil {
 			msgID := db.TgMsgID{
 				TgChatID:    sent.Chat.ID,
@@ -250,8 +259,8 @@ func handleAsync(envelope *MessageEnvelope) {
 	}
 }
 
-func createDialogStateFromMessage(m *dialog.MessageDto, message *tgbotapi.Message) (*dialog.DialogState, error) {
-	user, err := getOrRegisterUser(message)
+func createDialogStateFromMessage(m *dialog.MessageDto) (*dialog.DialogState, error) {
+	user, err := getOrRegisterUser(m.TgUser, m.TgContact)
 	if err != nil {
 		return nil, err
 	}
@@ -273,21 +282,21 @@ func createDialogStateFromMessage(m *dialog.MessageDto, message *tgbotapi.Messag
 	return &dState, nil
 }
 
-func getOrRegisterUser(message *tgbotapi.Message) (*db.User, error) {
+func getOrRegisterUser(tgUser *tgbotapi.User, tgContact *tgbotapi.Contact) (*db.User, error) {
 	phone := ""
-	if message.Contact != nil {
-		phone = message.Contact.PhoneNumber
+	if tgContact != nil {
+		phone = tgContact.PhoneNumber
 	}
 	user := db.User{
-		TgId:      message.From.ID,
-		Name:      message.From.FirstName,
+		TgId:      tgUser.ID,
+		Name:      tgUser.FirstName,
 		Phone:     phone,
-		Lang:      message.From.LanguageCode,
+		Lang:      tgUser.LanguageCode,
 		CreatedAt: primitive.NewDateTimeFromTime(time.Now()),
 	}
 	err := userService.Upsert(&user)
 	if err != nil {
-		user, err = userService.FindByTgID(message.From.ID)
+		user, err = userService.FindByTgID(tgUser.ID)
 	}
 
 	return &user, err
@@ -314,11 +323,29 @@ func getOrCreateSession(user *db.User) (*db.Session, error) {
 func updateSession(session *db.Session) error {
 	return sessionService.UpdateSession(session)
 }
-func reply(chatID int64, messageID int, forReply dialog.MessageForReply) (*tgbotapi.Message, error) {
-	return dialog.Reply(bot, chatID, messageID, forReply)
+func reply(chatMsgID dialog.ChatMessageID, forReply dialog.MessageForReply) (*tgbotapi.Message, error) {
+	return dialog.Reply(bot, chatMsgID, forReply)
 }
-func replyDelayed(chatID int64, messageID int, forReply dialog.MessageForReply) {
-	go delayMessage.ExecItem(bot, chatID, messageID, forReply)
+func replyInline(chatMsgID dialog.ChatMessageID, forReply dialog.MessageForReply) (tgbotapi.APIResponse, error) {
+	im := tgbotapi.InlineQueryResultArticle{
+		Type:  "article",
+		ID:    *chatMsgID.InlineMessageID,
+		Title: "Нажмите сюда, чтобы отправить",
+		InputMessageContent: tgbotapi.InputTextMessageContent{
+			Text: forReply.Text,
+		},
+		ReplyMarkup: forReply.InlineKeyboard,
+		URL:         "",
+		HideURL:     true,
+		Description: forReply.Text,
+	}
+	var testR []interface{}
+	testR = append(testR, im)
+	return bot.AnswerInlineQuery(tgbotapi.InlineConfig{*chatMsgID.InlineMessageID, testR, 0, true, "", "", "para"})
+}
+
+func replyDelayed(chatMsgID dialog.ChatMessageID, forReply dialog.MessageForReply) {
+	go delayMessage.ExecItem(bot, chatMsgID, forReply)
 }
 func createEmptyList(session *db.Session) (*db.PurchaseList, error) {
 	return purchaseListService.CreateEmptyList(session.UserId)
@@ -327,16 +354,21 @@ func createEmptyList(session *db.Session) (*db.PurchaseList, error) {
 func createOrUpdateList(m *dialog.MessageDto, session *db.Session) (*db.PurchaseList, error) {
 	var purchaseList db.PurchaseList
 	var err error
-	if session.PurchaseListId == primitive.NilObjectID {
+	if session.PurchaseListId == primitive.NilObjectID || m.ChatMsgID.InlineMessageID != nil {
 		purchaseList = db.PurchaseList{
-			UserID: session.UserId,
-			TgMsgID: []db.TgMsgID{
-				{
-					TgMessageID: m.ID,
-					TgChatID:    m.ChatID,
-				},
-			},
+			UserID:    session.UserId,
 			UpdatedAt: primitive.NewDateTimeFromTime(time.Now()),
+		}
+		if m.ChatMsgID.InlineMessageID != nil {
+			purchaseList.InlineMsgID = *m.ChatMsgID.InlineMessageID
+		} else {
+			purchaseList.TgMsgID = []db.TgMsgID{
+				{
+					TgMessageID: *m.ChatMsgID.MessageID,
+					TgChatID:    *m.ChatMsgID.ChatID,
+					IsInitial:   true,
+				},
+			}
 		}
 		purchaseList.UserID = session.UserId
 		purchaseList.CreatedAt = primitive.NewDateTimeFromTime(time.Now())
@@ -419,11 +451,36 @@ func crossOutItemFromPurchaseList(id primitive.ObjectID, itemHash string) (*db.P
 	return &pList, err
 }
 
-func getMessageChatId(envelope *MessageEnvelope) (int64, int) {
-	return envelope.Update.Message.Chat.ID, envelope.Update.Message.MessageID
+func getMessageChatId(envelope *MessageEnvelope) dialog.ChatMessageID {
+	return dialog.ChatMessageID{
+		&envelope.Update.Message.Chat.ID,
+		&envelope.Update.Message.MessageID,
+		nil,
+	}
 }
-func getCallbackChatId(envelope *MessageEnvelope) (int64, int) {
-	return envelope.Update.CallbackQuery.Message.Chat.ID, envelope.Update.CallbackQuery.Message.MessageID
+func getCallbackChatId(envelope *MessageEnvelope) dialog.ChatMessageID {
+	if envelope.Update.CallbackQuery.Message != nil {
+		log.Println("[getCallbackChatId] CbQ.Message")
+		return dialog.ChatMessageID{
+			&envelope.Update.CallbackQuery.Message.Chat.ID,
+			&envelope.Update.CallbackQuery.Message.MessageID,
+			nil,
+		}
+	}
+	log.Println("[getCallbackChatId] CbQ.InlineMessageID")
+	return dialog.ChatMessageID{
+		nil,
+		nil,
+		&envelope.Update.CallbackQuery.InlineMessageID,
+	}
+}
+
+func getInlineMessageChatId(query *tgbotapi.InlineQuery) dialog.ChatMessageID {
+	return dialog.ChatMessageID{
+		nil,
+		nil,
+		&query.ID,
+	}
 }
 
 func readCallbackQuery(query *tgbotapi.CallbackQuery, c *dialog.MessageHandler) dialog.MessageForReply {
@@ -457,13 +514,6 @@ func readCallbackQuery(query *tgbotapi.CallbackQuery, c *dialog.MessageHandler) 
 		session.PreviousState = session.PostingState
 		session.PostingState = db.SessPStateCreation
 		session.PurchaseListId = primitive.NilObjectID
-		purchaseList, err := createEmptyList(session)
-		if err != nil {
-			cbAnswer.Text = "Ошибка обновления сессии, попробуйте ещё раз"
-			log.Println(err)
-			return dialog.MessageForReply{NewMessage: false, Text: "", AnswerCallback: &cbAnswer}
-		}
-		session.PurchaseListId = purchaseList.Id
 		err = updateSession(session)
 		if err != nil {
 			cbAnswer.Text = "Ошибка обновления сессии, попробуйте ещё раз"
@@ -479,6 +529,26 @@ func readCallbackQuery(query *tgbotapi.CallbackQuery, c *dialog.MessageHandler) 
 			return dialog.MessageForReply{NewMessage: false, Text: "failed to cross out an item", AnswerCallback: &cbAnswer}
 		}
 		msg := c.GetMessageForReply(&m, nil, nil, purchaseList)
+		log.Println("[PLIST]", purchaseList.InlineMsgID)
+		if purchaseList.InlineMsgID != "" {
+			//copypaste
+			_, session, _, err := getStateByList(listID)
+			if err != nil {
+				cbAnswer.Text = "Ошибка"
+				log.Println(err)
+				return dialog.MessageForReply{NewMessage: false, Text: "", AnswerCallback: &cbAnswer}
+			}
+			session.PreviousState = session.PostingState
+			session.PostingState = db.SessPStateCreation
+			session.PurchaseListId = primitive.NilObjectID
+			err = updateSession(session)
+			if err != nil {
+				cbAnswer.Text = "Ошибка обновления сессии, попробуйте ещё раз"
+				log.Println(err)
+				return dialog.MessageForReply{NewMessage: false, Text: "", AnswerCallback: &cbAnswer}
+			}
+		}
+
 		msg.AnswerCallback = &cbAnswer
 		log.Println("crossed out")
 
@@ -550,7 +620,7 @@ func getStateByList(listID primitive.ObjectID) (*db.PurchaseList, *db.Session, *
 	return &pList, session, &user, err
 }
 
-func deleteMessage(listID primitive.ObjectID, ids []db.TgMsgID) error {
+func deleteMessage(listID primitive.ObjectID, prevPList *db.PurchaseList) error {
 	if bot == nil {
 		log.Println("[No bot] ")
 		return errors.New("No bot")
@@ -558,8 +628,10 @@ func deleteMessage(listID primitive.ObjectID, ids []db.TgMsgID) error {
 	log.Println("[message] DELETE")
 
 	var err error
-	for _, id := range ids {
-		_, err = bot.DeleteMessage(tgbotapi.NewDeleteMessage(id.TgChatID, id.TgMessageID))
+	for _, id := range prevPList.TgMsgID {
+		if id.IsInitial == false {
+			_, err = bot.DeleteMessage(tgbotapi.NewDeleteMessage(id.TgChatID, id.TgMessageID))
+		}
 		log.Println("[message] DELETE one", err)
 		_ = purchaseListService.DeleteMsgID(listID, id)
 	}

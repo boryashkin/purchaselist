@@ -5,6 +5,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"log"
+	"os"
 	"strings"
 	"time"
 )
@@ -18,6 +19,7 @@ const (
 	ComCancel           = "cancel"
 	ComDone             = "Гoтовo"
 	ComFinishedCrossout = "Нoвый списoк"
+	ComSwitchInline     = "Oткpыть мeню"
 )
 
 type MessageHandler struct {
@@ -37,6 +39,7 @@ func NewMessageHandler(api *tgbotapi.BotAPI, purchaseListService *db.PurchaseLis
 		ComCancel:           true,
 		ComDone:             true,
 		ComFinishedCrossout: true,
+		ComSwitchInline:     true,
 	}
 	replacer := strings.NewReplacer(
 		//".", "․",
@@ -65,8 +68,8 @@ func NewMessageHandler(api *tgbotapi.BotAPI, purchaseListService *db.PurchaseLis
 	return MessageHandler{Bot: api, commands: list, PurchaseListService: purchaseListService, textReplacer: replacer}
 }
 
-func (h *MessageHandler) ReadMessage(message *tgbotapi.Message) MessageDto {
-	m := MessageDto{UnknownContent: false, ID: message.MessageID, ChatID: message.Chat.ID}
+func (h *MessageHandler) ReadMessage(message *tgbotapi.Message, chatMsgID ChatMessageID) MessageDto {
+	m := MessageDto{UnknownContent: false, ChatMsgID: chatMsgID, TgUser: message.From, TgContact: message.Contact}
 	if message == nil {
 		return m
 	}
@@ -78,6 +81,9 @@ func (h *MessageHandler) ReadMessage(message *tgbotapi.Message) MessageDto {
 	} else if message.Text == ComDone || message.Text == ComFinishedCrossout {
 		m.Command = ComConfirm
 		m.Text = ""
+	} else if message.Text == ComSwitchInline {
+		m.Command = ComSwitchInline
+		m.Text = ""
 	} else if message.Caption != "" {
 		m.Text = message.Caption
 	} else if message.Text != "" {
@@ -85,6 +91,13 @@ func (h *MessageHandler) ReadMessage(message *tgbotapi.Message) MessageDto {
 	} else {
 		m.UnknownContent = true
 	}
+	return m
+}
+
+func (h *MessageHandler) ReadInlineQuery(query *tgbotapi.InlineQuery, chatMsgID ChatMessageID) MessageDto {
+	m := MessageDto{UnknownContent: false, ChatMsgID: chatMsgID, TgUser: query.From}
+	m.Text = query.Query
+
 	return m
 }
 
@@ -145,6 +158,7 @@ func (h *MessageHandler) getNewSessionStateByCommand(command string, currState d
 type MessageForReply struct {
 	NewMessage     bool
 	DeletePrevious *bool
+	IsInline       *bool
 	Text           string
 	InlineKeyboard *tgbotapi.InlineKeyboardMarkup
 	AnswerCallback *tgbotapi.CallbackConfig
@@ -162,7 +176,8 @@ func (h *MessageHandler) GetMessageForReply(
 ) MessageForReply {
 	//defaultMkdwn := tgbotapi.ModeMarkdown + "V2"
 	defaultMkdwn := ""
-	msg := MessageForReply{NewMessage: true, Markdown: &defaultMkdwn}
+	isInline := m.ChatMsgID.InlineMessageID != nil
+	msg := MessageForReply{NewMessage: true, Markdown: &defaultMkdwn, IsInline: &isInline}
 	if session == nil {
 		msg.NewMessage = false
 		msg = h.createMessageForPurchaseList(msg, purchaseList)
@@ -181,6 +196,9 @@ func (h *MessageHandler) GetMessageForReply(
 			msg.Text = "Список закрыт\n\n" +
 				"Введите название товара или список"
 			msg.NewMessage = true
+			return msg
+		case ComSwitchInline:
+			msg = returnInlineKeyboard(msg)
 			return msg
 		}
 	}
@@ -250,6 +268,12 @@ func (h *MessageHandler) createMessageForPurchaseList(msg MessageForReply, purch
 	}
 	stylePre = ""
 	stylePost = ""
+	if len(purchaseList.DeletedItemHashes) == 0 && len(purchaseList.Items) > 0 {
+		keys := []tgbotapi.InlineKeyboardButton{
+			GetInlineReplyButton(""),
+		}
+		rows = append(rows, keys)
+	}
 	for _, key := range purchaseList.Items {
 		keys := []tgbotapi.InlineKeyboardButton{}
 		keyS := string(key)
@@ -263,14 +287,43 @@ func (h *MessageHandler) createMessageForPurchaseList(msg MessageForReply, purch
 		msg.Text += stylePre + h.textReplacer.Replace(name) + stylePost + "\n"
 	}
 	if len(rows) > 0 {
+		if len(purchaseList.DeletedItemHashes) == 0 {
+			rows[0][0].SwitchInlineQuery = &msg.Text
+		}
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 		msg.InlineKeyboard = &keyboard
 	} else {
 		keys := []tgbotapi.InlineKeyboardButton{}
-		keys = append(keys, tgbotapi.NewInlineKeyboardButtonData(ComFinishedCrossout, purchaseList.Id.Hex()+":"+ComFinishedCrossout))
+		if purchaseList.InlineMsgID != "" {
+			inLnk := "https://t.me/" + os.Getenv("BOTNAME")
+			inBtn := tgbotapi.InlineKeyboardButton{
+				Text: "Перейти к боту",
+				URL:  &inLnk,
+			}
+			keys = append(keys, inBtn)
+		} else {
+			keys = append(keys, tgbotapi.NewInlineKeyboardButtonData(ComFinishedCrossout, purchaseList.Id.Hex()+":"+ComFinishedCrossout))
+		}
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(keys)
 		msg.InlineKeyboard = &keyboard
 	}
 
 	return msg
+}
+
+func returnInlineKeyboard(msg MessageForReply) MessageForReply {
+	keys := []tgbotapi.InlineKeyboardButton{}
+
+	keys = append(keys, tgbotapi.NewInlineKeyboardButtonSwitch("Отправить такой же", msg.Text))
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(keys)
+	msg.InlineKeyboard = &keyboard
+	msg.Text = "a"
+
+	return msg
+}
+
+func GetInlineReplyButton(textList string) tgbotapi.InlineKeyboardButton {
+	key := tgbotapi.NewInlineKeyboardButtonSwitch("Поделиться списком", textList)
+
+	return key
 }

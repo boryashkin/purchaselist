@@ -29,12 +29,12 @@ func (d *DelayMessage) SetLastDate(id primitive.ObjectID, random int) {
 	d.messages[id] = random
 }
 
-func (d *DelayMessage) ExecItem(bot *tgbotapi.BotAPI, chatID int64, messageID int, reply dialog.MessageForReply) {
+func (d *DelayMessage) ExecItem(bot *tgbotapi.BotAPI, chatMsgID dialog.ChatMessageID, reply dialog.MessageForReply) {
 	if reply.CreatedAt != nil {
 		time.Sleep(time.Millisecond * 500)
 		if reply.Rand == d.messages[reply.PListID] {
 			metrics.QueueExecItem.With(prometheus.Labels{"action": "exec_delayed"}).Inc()
-			sent, err := d.fn(bot, chatID, messageID, reply)
+			sent, err := d.fn(bot, chatMsgID, reply)
 			if err == nil {
 				msgID := db.TgMsgID{
 					TgChatID:    sent.Chat.ID,
@@ -48,6 +48,6 @@ func (d *DelayMessage) ExecItem(bot *tgbotapi.BotAPI, chatID int64, messageID in
 		}
 	} else {
 		metrics.QueueExecItem.With(prometheus.Labels{"action": "no_delay"}).Inc()
-		d.fn(bot, chatID, messageID, reply)
+		d.fn(bot, chatMsgID, reply)
 	}
 }
