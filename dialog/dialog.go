@@ -42,10 +42,6 @@ func NewMessageHandler(api *tgbotapi.BotAPI, purchaseListService *db.PurchaseLis
 		ComSwitchInline:     true,
 	}
 	replacer := strings.NewReplacer(
-		//".", "․",
-		//"~", "～",
-		//"*", "＊",
-		//"-", "—",
 		"_", "\\_",
 		"*", "\\*",
 		"[", "\\[",
@@ -64,6 +60,7 @@ func NewMessageHandler(api *tgbotapi.BotAPI, purchaseListService *db.PurchaseLis
 		"}", "\\}",
 		".", "\\.",
 		"!", "\\!",
+		"\\", "",
 	)
 	return MessageHandler{Bot: api, commands: list, PurchaseListService: purchaseListService, textReplacer: replacer}
 }
