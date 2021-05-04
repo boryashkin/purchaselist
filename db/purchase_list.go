@@ -118,6 +118,7 @@ func (s *PurchaseListService) CrossOutItemFromPurchaseList(id primitive.ObjectID
 		bson.M{
 			"$addToSet": bson.M{"deleted_purchase_items": itemHash},
 			"$pull":     bson.M{"purchase_items": itemHash},
+			"$set":      bson.M{"updated_at": primitive.NewDateTimeFromTime(time.Now())},
 		},
 	)
 	if err != nil {
@@ -140,6 +141,7 @@ func (s *PurchaseListService) AddItemToPurchaseList(id primitive.ObjectID, item 
 				"items_dictionary": PurchaseItem{Name: item, Hash: hash},
 				"purchase_items":   hash,
 			},
+			"$set": bson.M{"updated_at": primitive.NewDateTimeFromTime(time.Now())},
 		},
 	)
 	if err != nil {
